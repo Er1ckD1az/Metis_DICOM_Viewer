@@ -4,4 +4,7 @@ __pycache__/
 # IDEs
 .idea/
 
+# Environment
+.env/
+
 data/
