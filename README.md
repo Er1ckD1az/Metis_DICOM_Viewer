@@ -5,7 +5,7 @@ Please download it from: [https://www.med.upenn.edu/sbia/brats2016.html](https:/
 
 to run the backend, create a .env file in the backend folder with the following environment variables:
 
-# PostgreSQL
+**PostgreSQL**
 
 DB_HOST
 DB_NAME
@@ -13,7 +13,7 @@ DB_USER
 DB_PASSWORD
 DB_PORT
 
-# S3
+**S3**
 
 AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
