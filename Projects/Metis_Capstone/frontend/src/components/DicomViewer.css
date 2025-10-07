@@ -12,6 +12,8 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  align-items: center; 
+  justify-content: center; 
 }
 
 /* Top info bar */
@@ -26,14 +28,16 @@
 
 /* DICOM window */
 .viewer-screen {
-  flex: 1;
+  width: 90%;
+  height: 90%;
+  max-width: 1024px; /* keeps it balanced on wide screens */
+  max-height: 768px;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
   background-color: black;
   border: 2px dashed #555;
-  margin: 20px;
+  position: relative;
 }
 
 .viewer-screen p {
@@ -110,4 +114,46 @@
   padding: 10px;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* make the entire viewer-screen a positioning context */
+.viewer-screen {
+  position: relative;
+  background-color: black;
+  border: 2px dashed #555;
+  margin: 20px;
+}
+
+/* center overlay absolutely */
+.empty-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* ensure it doesn't block clicks */
+}
+
+/* dashed outline box */
+.empty-box {
+  border: 1px dashed #5a6b7d;
+  border-radius: 8px;
+  padding: 16px 24px;
+  text-align: center;
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.empty-box h3 {
+  color: #b7cfe3;
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.empty-box p {
+  color: #8ea5b7;
+  font-size: 13px;
+  margin: 0;
 }

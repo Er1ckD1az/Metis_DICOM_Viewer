@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import "./DicomViewer.css";
 import * as cornerstone from "cornerstone-core";
 import * as cornerstoneTools from "cornerstone-tools";
@@ -11,6 +11,7 @@ cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
 
 const DicomViewer: React.FC = () => {
   const elementRef = useRef<HTMLDivElement | null>(null);
+  const [hasImage, setHasImage] = useState(false);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -22,9 +23,16 @@ const DicomViewer: React.FC = () => {
       const input = e.target as HTMLInputElement;
       const file = input?.files?.[0];
       if (!file) return;
-      const imageId = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
-      const image = await cornerstone.loadImage(imageId);
-      cornerstone.displayImage(element, image);
+      
+      try {
+        const imageId = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
+        const image = await cornerstone.loadImage(imageId);
+        cornerstone.displayImage(element, image);
+        setHasImage(true); // Set to true when image is successfully loaded
+      } catch (error) {
+        console.error("Failed to load DICOM image:", error);
+        setHasImage(false);
+      }
     };
 
     const fileInput = document.getElementById("dicomUpload");
@@ -55,16 +63,20 @@ const DicomViewer: React.FC = () => {
           <div>Image: 108 of 150 (69.2%)</div>
         </div>
 
-        <div className="viewer-screen" ref={elementRef}>
-          <p>
-            No Image Loaded
-            <br />
-            <small>Upload a DICOM file to begin viewing</small>
-          </p>
-          <span className="orientation top">A</span>
-          <span className="orientation left">R</span>
-          <span className="orientation right">L</span>
-        </div>
+ <div className="viewer-screen" ref={elementRef}>
+  {!hasImage && (
+    <div className="empty-overlay">
+      <div className="empty-box">
+        <h3>No Image Loaded</h3>
+        <p>Upload a DICOM file to begin viewing</p>
+      </div>
+    </div>
+  )}
+  <span className="orientation top">A</span>
+  <span className="orientation left">R</span>
+  <span className="orientation right">L</span>
+</div>
+
       </div>
 
       {/* Right sidebar */}
