@@ -1,0 +1,113 @@
+.viewer-container {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  background-color: #0b1220;
+  color: white;
+  overflow: hidden;
+}
+
+/* Viewer section */
+.viewer-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top info bar */
+.viewer-header {
+  background-color: #121a2b;
+  border-bottom: 1px solid #2a2f3d;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 20px;
+  font-size: 14px;
+}
+
+/* DICOM window */
+.viewer-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background-color: black;
+  border: 2px dashed #555;
+  margin: 20px;
+}
+
+.viewer-screen p {
+  color: #888;
+  text-align: center;
+}
+
+/* Orientation letters */
+.orientation {
+  position: absolute;
+  color: #888;
+  font-size: 12px;
+}
+.orientation.top { top: 5px; left: 50%; transform: translateX(-50%); }
+.orientation.left { left: 5px; top: 50%; transform: translateY(-50%); }
+.orientation.right { right: 5px; top: 50%; transform: translateY(-50%); }
+
+/* Sidebar */
+.viewer-sidebar {
+  width: 250px;
+  background-color: #121a2b;
+  border-left: 1px solid #2a2f3d;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px;
+}
+
+.sidebar-title {
+  font-size: 18px;
+  font-weight: bold;
+  margin-bottom: 15px;
+}
+
+.sidebar-section {
+  margin-bottom: 20px;
+}
+
+.sidebar-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sidebar-btn {
+  background-color: #1a2338;
+  border: none;
+  color: #ccc;
+  border-radius: 6px;
+  padding: 10px 5px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.sidebar-btn:hover {
+  background-color: #1f2d48;
+  color: white;
+}
+
+.sidebar-btn.active {
+  background-color: #0b394a;
+  color: white;
+}
+
+.upload-box {
+  border: 1px solid #444;
+  border-radius: 6px;
+  background-color: #1b253a;
+  color: #ccc;
+  padding: 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
