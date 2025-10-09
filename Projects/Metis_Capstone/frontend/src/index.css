@@ -2,39 +2,53 @@
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
 }
 
+/* Links */
 a {
   font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+  color: #0066cc;
+  text-decoration: none;
+  transition: color 0.2s ease;
 }
 
-body {
+a:hover {
+  color: #004da0;
+}
+
+/* Global layout */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
   margin: 0;
-  display: flex;
-  place-items: center;
+  padding: 0;
+}
+
+/* Light default theme (Landing page) */
+body {
+  color: #0f172a;
+  background-color: #ffffff;
   min-width: 320px;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
+/* Headings */
 h1 {
-  font-size: 3.2em;
+  font-size: 2.5rem;
   line-height: 1.1;
+  margin: 0;
 }
 
+/* Buttons */
 button {
   border-radius: 8px;
   border: 1px solid transparent;
@@ -43,34 +57,44 @@ button {
   font-weight: 500;
   font-family: inherit;
   background-color: #1a1a1a;
+  color: #ffffff;
   cursor: pointer;
-  transition: border-color 0.25s;
+  transition: all 0.25s ease;
 }
+
 button:hover {
-  border-color: #646cff;
+  background-color: #333333;
 }
+
 button:focus,
 button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  outline: 3px solid #0066cc;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
+/* Responsive adjustment */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 2rem;
   }
 }
 
-html, body, #root {
-  height: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-  background-color: #0b1220; /* match your viewer background */
+/* --- DICOM Viewer overrides (dark mode only inside viewer) --- */
+.viewer-container {
+  background-color: #0b1220 !important;
+  color: white !important;
 }
+
+.viewer-sidebar,
+.viewer-header {
+  background-color: #121a2b !important;
+  color: white !important;
+}
+
+.viewer-screen {
+  background-color: black !important;
+}
+.viewer-button {
+  background-color: #1a1a1a !important;
+  color: white !important;
+  border: none !important;
+} 

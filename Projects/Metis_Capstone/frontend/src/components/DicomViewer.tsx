@@ -5,9 +5,10 @@ import * as cornerstoneTools from "cornerstone-tools";
 import * as cornerstoneWADOImageLoader from "cornerstone-wado-image-loader";
 import Hammer from "hammerjs";
 
-cornerstoneTools.external.cornerstone = cornerstone;
-cornerstoneTools.external.Hammer = Hammer;
-cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
+// wire up external deps for cornerstone-tools & wado loader
+cornerstoneTools.external.cornerstone = cornerstone as any;
+cornerstoneTools.external.Hammer = Hammer as any;
+cornerstoneWADOImageLoader.external.cornerstone = cornerstone as any;
 
 const DicomViewer: React.FC = () => {
   const elementRef = useRef<HTMLDivElement | null>(null);
@@ -17,18 +18,20 @@ const DicomViewer: React.FC = () => {
     const element = elementRef.current;
     if (!element) return;
 
+    // enable the viewport
     cornerstone.enable(element);
 
     const handleFileChange = async (e: Event) => {
       const input = e.target as HTMLInputElement;
       const file = input?.files?.[0];
       if (!file) return;
-      
+
       try {
+        // Cornerstone WADO loader is DICOM-only (.dcm). NIfTI will not render here.
         const imageId = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
         const image = await cornerstone.loadImage(imageId);
         cornerstone.displayImage(element, image);
-        setHasImage(true); // Set to true when image is successfully loaded
+        setHasImage(true);
       } catch (error) {
         console.error("Failed to load DICOM image:", error);
         setHasImage(false);
@@ -38,10 +41,11 @@ const DicomViewer: React.FC = () => {
     const fileInput = document.getElementById("dicomUpload");
     fileInput?.addEventListener("change", handleFileChange);
 
+    // tools
     cornerstoneTools.init();
-    const WwwcTool = cornerstoneTools.WwwcTool;
-    const PanTool = cornerstoneTools.PanTool;
-    const ZoomTool = cornerstoneTools.ZoomTool;
+    const WwwcTool = (cornerstoneTools as any).WwwcTool;
+    const PanTool = (cornerstoneTools as any).PanTool;
+    const ZoomTool = (cornerstoneTools as any).ZoomTool;
 
     cornerstoneTools.addTool(WwwcTool);
     cornerstoneTools.addTool(PanTool);
@@ -56,6 +60,13 @@ const DicomViewer: React.FC = () => {
 
   return (
     <div className="viewer-container">
+      {/* Quick nav back to landing */}
+      <div style={{ position: "fixed", top: 10, left: 10, zIndex: 50 }}>
+        <a href="#/" style={{ color: "#9cc3ff", textDecoration: "none" }}>
+          ← Back to Home
+        </a>
+      </div>
+
       {/* Left side viewer */}
       <div className="viewer-main">
         <div className="viewer-header">
@@ -63,20 +74,19 @@ const DicomViewer: React.FC = () => {
           <div>Image: 108 of 150 (69.2%)</div>
         </div>
 
- <div className="viewer-screen" ref={elementRef}>
-  {!hasImage && (
-    <div className="empty-overlay">
-      <div className="empty-box">
-        <h3>No Image Loaded</h3>
-        <p>Upload a DICOM file to begin viewing</p>
-      </div>
-    </div>
-  )}
-  <span className="orientation top">A</span>
-  <span className="orientation left">R</span>
-  <span className="orientation right">L</span>
-</div>
-
+        <div className="viewer-screen" ref={elementRef}>
+          {!hasImage && (
+            <div className="empty-overlay">
+              <div className="empty-box">
+                <h3>No Image Loaded</h3>
+                <p>Upload a DICOM file to begin viewing</p>
+              </div>
+            </div>
+          )}
+          <span className="orientation top">A</span>
+          <span className="orientation left">R</span>
+          <span className="orientation right">L</span>
+        </div>
       </div>
 
       {/* Right sidebar */}
@@ -126,7 +136,7 @@ const DicomViewer: React.FC = () => {
         <input
           id="dicomUpload"
           type="file"
-          accept=".dcm"
+          accept=".dcm,.nii,.nii.gz"
           className="upload-box"
         />
       </div>
