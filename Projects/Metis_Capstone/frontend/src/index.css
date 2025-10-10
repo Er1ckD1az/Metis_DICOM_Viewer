@@ -1,0 +1,100 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
+}
+
+/* Links */
+a {
+  font-weight: 500;
+  color: #0066cc;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: #004da0;
+}
+
+/* Global layout */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Light default theme (Landing page) */
+body {
+  color: #0f172a;
+  background-color: #ffffff;
+  min-width: 320px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Headings */
+h1 {
+  font-size: 2.5rem;
+  line-height: 1.1;
+  margin: 0;
+}
+
+/* Buttons */
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+button:hover {
+  background-color: #333333;
+}
+
+button:focus,
+button:focus-visible {
+  outline: 3px solid #0066cc;
+}
+
+/* Responsive adjustment */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 2rem;
+  }
+}
+
+/* --- DICOM Viewer overrides (dark mode only inside viewer) --- */
+.viewer-container {
+  background-color: #0b1220 !important;
+  color: white !important;
+}
+
+.viewer-sidebar,
+.viewer-header {
+  background-color: #121a2b !important;
+  color: white !important;
+}
+
+.viewer-screen {
+  background-color: black !important;
+}
+.viewer-button {
+  background-color: #1a1a1a !important;
+  color: white !important;
+  border: none !important;
+} 

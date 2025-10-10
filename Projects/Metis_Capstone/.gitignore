@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+
+# IDEs
+.idea/
+
+data/
+
+# Environment
+.env/
+
+data/
+
+checkpoints/
+
+results/
+
+ModelPaths/
+
+
