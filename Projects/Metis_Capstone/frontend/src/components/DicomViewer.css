@@ -2,7 +2,7 @@
   display: flex;
   height: 100vh;
   width: 100%;
-  background-color: #0b1220;
+  background: #2e2e2e;
   color: white;
   overflow: hidden;
 }
@@ -12,14 +12,16 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center; 
-  justify-content: center; 
+  height: 100vh;
 }
 
 /* Top info bar */
 .viewer-header {
-  background-color: #121a2b;
-  border-bottom: 1px solid #2a2f3d;
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   display: flex;
   justify-content: space-between;
   padding: 10px 20px;
@@ -28,16 +30,14 @@
 
 /* DICOM window */
 .viewer-screen {
-  width: 90%;
-  height: 90%;
-  max-width: 1024px; /* keeps it balanced on wide screens */
-  max-height: 768px;
+  flex: 1;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: black;
-  border: 2px dashed #555;
+  background-color: #2e2e2e;
   position: relative;
+  overflow: hidden;
 }
 
 .viewer-screen p {
@@ -57,13 +57,17 @@
 
 /* Sidebar */
 .viewer-sidebar {
-  width: 250px;
-  background-color: #121a2b;
-  border-left: 1px solid #2a2f3d;
+  width: 280px;
+  background: rgba(30, 41, 59, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 20px;
+  padding: 0;
+  overflow-y: auto;
 }
 
 .sidebar-title {
@@ -83,8 +87,10 @@
 }
 
 .sidebar-btn {
-  background-color: #1a2338;
-  border: none;
+  background: rgba(51, 65, 85, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.2);
   color: #ccc;
   border-radius: 6px;
   padding: 10px 5px;
@@ -93,36 +99,42 @@
   flex-direction: column;
   align-items: center;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition: all 0.3s ease;
 }
 
 .sidebar-btn:hover {
-  background-color: #1f2d48;
+  background: rgba(51, 65, 85, 0.7);
+  border-color: rgba(148, 163, 184, 0.3);
   color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.2);
 }
 
 .sidebar-btn.active {
-  background-color: #0b394a;
+  background: rgba(59, 130, 246, 0.4);
+  border-color: rgba(59, 130, 246, 0.5);
   color: white;
+  box-shadow: 0 4px 16px 0 rgba(59, 130, 246, 0.3);
 }
 
 .upload-box {
-  border: 1px solid #444;
+  border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 6px;
-  background-color: #1b253a;
+  background: rgba(51, 65, 85, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   color: #ccc;
   padding: 10px;
   font-size: 12px;
   cursor: pointer;
+  transition: all 0.3s ease;
 }
 
-/* make the entire viewer-screen a positioning context */
-.viewer-screen {
-  position: relative;
-  background-color: black;
-  border: 2px dashed #555;
-  margin: 20px;
+.upload-box:hover {
+  background: rgba(51, 65, 85, 0.7);
+  border-color: rgba(148, 163, 184, 0.3);
 }
+
 
 /* center overlay absolutely */
 .empty-overlay {

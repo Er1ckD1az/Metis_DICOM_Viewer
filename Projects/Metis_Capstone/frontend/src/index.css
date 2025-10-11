@@ -80,7 +80,7 @@ button:focus-visible {
 
 /* --- DICOM Viewer overrides (dark mode only inside viewer) --- */
 .viewer-container {
-  background-color: #0b1220 !important;
+  background-color: #2e2e2e !important;
   color: white !important;
 }
 
@@ -91,7 +91,7 @@ button:focus-visible {
 }
 
 .viewer-screen {
-  background-color: black !important;
+  background-color: #2e2e2e !important;
 }
 .viewer-button {
   background-color: #1a1a1a !important;
