@@ -23,12 +23,19 @@ const DicomViewer: React.FC = () => {
   const lastPanPos = useRef({ x: 0, y: 0 });
 
   // overlay tools state
-  const [mode, setMode] = useState<'select'|'measure'|'annotate'|'crosshair'>('select');
+  const [mode, setMode] = useState<'none'|'measure'|'annotate'|'erase'>('none');
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
   const drawingRef = useRef<{ drawing: boolean; x:number; y:number } | null>(null);
   const [measurements, setMeasurements] = useState<Array<{ x1:number,y1:number,x2:number,y2:number }>>([]);
-  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string }>>([]);
+  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string,color:string }>>([]);
+  const [hoveredAnnotation, setHoveredAnnotation] = useState<number | null>(null);
+  const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null);
+  
+  // Annotation modal state
+  const [showAnnotationModal, setShowAnnotationModal] = useState(false);
+  const [annotationText, setAnnotationText] = useState('');
+  const [pendingAnnotation, setPendingAnnotation] = useState<{ x: number; y: number; color: string } | null>(null);
   
   // Accordion state for collapsible sections
   const [expandedSections, setExpandedSections] = useState<{[key: string]: boolean}>({
@@ -43,7 +50,18 @@ const DicomViewer: React.FC = () => {
   };
 
   // Interaction mode state (only one can be active at a time)
-  const [interactionMode, setInteractionMode] = useState<'scroll' | 'zoom' | 'pan' | 'brightness' | 'contrast' | null>('scroll');
+  const [interactionMode, setInteractionMode] = useState<'scroll' | 'zoom' | 'pan' | 'brightness' | 'contrast' | null>(null);
+
+  // Helper functions to ensure only one tool is active at a time across all sections
+  const activateInteractionMode = (newMode: 'scroll' | 'zoom' | 'pan' | 'brightness' | 'contrast' | null) => {
+    setMode('none'); // Deactivate any measuring tools
+    setInteractionMode(newMode);
+  };
+
+  const activateMeasuringMode = (newMode: 'none' | 'measure' | 'annotate' | 'erase') => {
+    setInteractionMode(null); // Deactivate any interaction tools
+    setMode(newMode);
+  };
 
   // Load and display NIfTI file (same logic as original)
   const loadNiftiFile = async (file: File) => {
@@ -145,9 +163,10 @@ const DicomViewer: React.FC = () => {
 
     const { slice, width, height } = getSlice(niftiData, dimensions, currentSlice, currentView);
 
-    // target viewer size
-    const viewerWidth = 800;
-    const viewerHeight = 600;
+    // Get actual viewer size from the wrapper element
+    const wrapper = wrapperRef.current;
+    const viewerWidth = wrapper?.clientWidth || 800;
+    const viewerHeight = wrapper?.clientHeight || 600;
     const scale = Math.max(viewerWidth / width, viewerHeight / height);
     const displayWidth = Math.floor(width * scale);
     const displayHeight = Math.floor(height * scale);
@@ -246,10 +265,12 @@ const DicomViewer: React.FC = () => {
 
     // overlay sizing and draw
     if (overlay) {
-      overlay.width = displayWidth * dpr;
-      overlay.height = displayHeight * dpr;
-      overlay.style.width = `${displayWidth}px`;
-      overlay.style.height = `${displayHeight}px`;
+      // Set overlay to match the rendered canvas size EXACTLY
+      // Use the actual pixel dimensions that were set on the canvas
+      overlay.width = canvas.width;
+      overlay.height = canvas.height;
+      overlay.style.width = canvas.style.width;
+      overlay.style.height = canvas.style.height;
       const octx = overlay.getContext('2d');
       if (octx) {
         octx.setTransform(dpr,0,0,dpr,0,0);
@@ -271,26 +292,66 @@ const DicomViewer: React.FC = () => {
         });
 
         // draw annotations
-        octx.fillStyle = '#FFFF00';
-        annotations.forEach(a => {
+        annotations.forEach((a, idx) => {
+          // Draw colored circle
           octx.beginPath();
-          octx.arc(a.x, a.y, 4, 0, Math.PI*2);
+          octx.arc(a.x, a.y, 8, 0, Math.PI*2);
+          octx.fillStyle = a.color;
           octx.fill();
-          octx.fillText(a.text, a.x + 6, a.y - 6);
+          octx.strokeStyle = '#fff';
+          octx.lineWidth = 2;
+          octx.stroke();
+          
+          // Draw tooltip if hovered
+          if (hoveredAnnotation === idx) {
+            const padding = 8;
+            const fontSize = 12;
+            octx.font = `${fontSize}px system-ui`;
+            const textWidth = octx.measureText(a.text).width;
+            const tooltipWidth = textWidth + padding * 2;
+            const tooltipHeight = fontSize + padding * 2;
+            const tooltipX = a.x + 12;
+            const tooltipY = a.y - tooltipHeight - 8;
+            
+            // Draw tooltip background
+            octx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            octx.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+            octx.strokeStyle = a.color;
+            octx.lineWidth = 2;
+            octx.strokeRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+            
+            // Draw text
+            octx.fillStyle = '#fff';
+            octx.fillText(a.text, tooltipX + padding, tooltipY + fontSize + padding - 2);
+          }
         });
 
-        // crosshair mode center
-        if (mode === 'crosshair'){
-          const cx = displayWidth / 2;
-          const cy = displayHeight / 2;
-          octx.strokeStyle = '#FF0000';
+        // Draw eraser cursor
+        if (mode === 'erase' && cursorPosition) {
           octx.beginPath();
-          octx.moveTo(cx, 0);
-          octx.lineTo(cx, displayHeight);
-          octx.moveTo(0, cy);
-          octx.lineTo(displayWidth, cy);
+          octx.arc(cursorPosition.x, cursorPosition.y, 12, 0, Math.PI*2);
+          octx.strokeStyle = '#FF4444';
+          octx.lineWidth = 2;
+          octx.setLineDash([4, 4]);
+          octx.stroke();
+          octx.setLineDash([]);
+          
+          // Draw X in the circle
+          octx.strokeStyle = '#FF4444';
+          octx.lineWidth = 2;
+          const xSize = 6;
+          octx.beginPath();
+          octx.moveTo(cursorPosition.x - xSize, cursorPosition.y - xSize);
+          octx.lineTo(cursorPosition.x + xSize, cursorPosition.y + xSize);
+          octx.moveTo(cursorPosition.x + xSize, cursorPosition.y - xSize);
+          octx.lineTo(cursorPosition.x - xSize, cursorPosition.y + xSize);
           octx.stroke();
         }
+
+        // DEBUG: Draw border around overlay canvas to show its boundaries
+        octx.strokeStyle = '#FF00FF';
+        octx.lineWidth = 4;
+        octx.strokeRect(2, 2, displayWidth - 4, displayHeight - 4);
       }
     }
   };
@@ -298,7 +359,7 @@ const DicomViewer: React.FC = () => {
   useEffect(() => {
     renderSlice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, currentSlice, currentView, windowLevel, windowWidth, flipH, flipV, measurements, annotations, mode, zoomLevel, panOffset]);
+  }, [niftiData, currentSlice, currentView, windowLevel, windowWidth, flipH, flipV, measurements, annotations, mode, zoomLevel, panOffset, hoveredAnnotation, cursorPosition]);
 
   // file input handler
   useEffect(() => {
@@ -369,15 +430,88 @@ const DicomViewer: React.FC = () => {
     };
 
     const onDown = (ev: MouseEvent) => {
-      if (mode === 'measure' || mode === 'annotate'){
-        const p = toLocal(ev);
+      const p = toLocal(ev);
+      
+      // DEBUG: Log click coordinates and canvas dimensions
+      const r = rect();
+      console.log('Click Debug:', {
+        clientX: ev.clientX,
+        clientY: ev.clientY,
+        overlayLeft: r.left,
+        overlayTop: r.top,
+        overlayWidth: r.width,
+        overlayHeight: r.height,
+        localX: p.x,
+        localY: p.y,
+        mode: mode
+      });
+      
+      if (mode === 'erase') {
+        // Check if clicking on an annotation
+        let annotationRemoved = false;
+        annotations.forEach((a, idx) => {
+          const dx = p.x - a.x;
+          const dy = p.y - a.y;
+          const distance = Math.sqrt(dx*dx + dy*dy);
+          if (distance <= 12 && !annotationRemoved) {
+            setAnnotations(prev => prev.filter((_, i) => i !== idx));
+            annotationRemoved = true;
+          }
+        });
+        
+        // Check if clicking on a measurement
+        if (!annotationRemoved) {
+          measurements.forEach((m, idx) => {
+            // Calculate distance from point to line segment
+            const dx = m.x2 - m.x1;
+            const dy = m.y2 - m.y1;
+            const length = Math.sqrt(dx*dx + dy*dy);
+            if (length === 0) return;
+            
+            const t = Math.max(0, Math.min(1, ((p.x - m.x1) * dx + (p.y - m.y1) * dy) / (length * length)));
+            const projX = m.x1 + t * dx;
+            const projY = m.y1 + t * dy;
+            const distToLine = Math.sqrt((p.x - projX)**2 + (p.y - projY)**2);
+            
+            if (distToLine <= 8) {
+              setMeasurements(prev => prev.filter((_, i) => i !== idx));
+            }
+          });
+        }
+      } else if (mode === 'measure' || mode === 'annotate'){
         drawingRef.current = { drawing: true, x: p.x, y: p.y };
       }
     };
 
     const onMove = (ev: MouseEvent) => {
-      if (!drawingRef.current) return;
       const p = toLocal(ev);
+      
+      // Update cursor position for eraser
+      if (mode === 'erase') {
+        setCursorPosition(p);
+      } else {
+        setCursorPosition(null);
+      }
+      
+      // Check if hovering over an annotation (works in all modes except erase)
+      if (mode !== 'erase') {
+        let foundHover = false;
+        annotations.forEach((a, idx) => {
+          const dx = p.x - a.x;
+          const dy = p.y - a.y;
+          const distance = Math.sqrt(dx*dx + dy*dy);
+          if (distance <= 8) {
+            setHoveredAnnotation(idx);
+            foundHover = true;
+          }
+        });
+        if (!foundHover && hoveredAnnotation !== null) {
+          setHoveredAnnotation(null);
+        }
+      }
+      
+      if (!drawingRef.current) return;
+      
       if (mode === 'measure'){
         // live preview: redraw overlays by calling renderSlice (which clears overlays) then draw line
         renderSlice();
@@ -394,6 +528,7 @@ const DicomViewer: React.FC = () => {
         const dx = p.x - drawingRef.current.x;
         const dy = p.y - drawingRef.current.y;
         octx.fillStyle = '#00FF00';
+        octx.font = '12px system-ui';
         octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + p.x)/2 + 5, (drawingRef.current.y + p.y)/2 - 5);
       } else if (mode === 'annotate'){
         renderSlice();
@@ -402,9 +537,12 @@ const DicomViewer: React.FC = () => {
         const dpr = window.devicePixelRatio || 1;
         octx.setTransform(dpr,0,0,dpr,0,0);
         octx.beginPath();
-        octx.arc(p.x, p.y, 4, 0, Math.PI*2);
-        octx.fillStyle = '#FFFF00';
+        octx.arc(p.x, p.y, 8, 0, Math.PI*2);
+        octx.fillStyle = '#FFAA00';
         octx.fill();
+        octx.strokeStyle = '#fff';
+        octx.lineWidth = 2;
+        octx.stroke();
       }
     };
 
@@ -419,24 +557,36 @@ const DicomViewer: React.FC = () => {
           { x1: ref.x, y1: ref.y, x2: p.x, y2: p.y },
         ]);
       } else if (mode === 'annotate') {
-        const text = prompt('Annotation text:', 'note') || 'note';
-        setAnnotations(a => [...a, { x: p.x, y: p.y, text }]);
+        // Generate random color for the annotation
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        
+        // Show modal instead of browser prompt
+        setPendingAnnotation({ x: p.x, y: p.y, color });
+        setAnnotationText('');
+        setShowAnnotationModal(true);
       }
 
       drawingRef.current = null;
       renderSlice();
     };
 
+    const onLeave = () => {
+      setCursorPosition(null);
+    };
+
     overlay.addEventListener('mousedown', onDown);
-    window.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mouseleave', onLeave);
     window.addEventListener('mouseup', onUp);
 
     return () => {
       overlay.removeEventListener('mousedown', onDown);
-      window.removeEventListener('mousemove', onMove);
+      overlay.removeEventListener('mousemove', onMove);
+      overlay.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [mode, measurements, annotations]);
+  }, [mode, measurements, annotations, hoveredAnnotation]);
 
   // Interaction mode handlers (scroll, zoom, pan)
   useEffect(() => {
@@ -527,36 +677,210 @@ const DicomViewer: React.FC = () => {
     setFlipV(false);
     setMeasurements([]);
     setAnnotations([]);
-    setMode('select');
+    setMode('none');
     setZoomLevel(1);
     setPanOffset({ x: 0, y: 0 });
-    setInteractionMode('scroll');
+    setInteractionMode(null);
     setWindowLevel(224);
     setWindowWidth(600);
+    setHoveredAnnotation(null);
+  };
+
+  // Handle annotation modal
+  const handleAnnotationSubmit = () => {
+    if (pendingAnnotation && annotationText.trim()) {
+      setAnnotations(a => [...a, { 
+        x: pendingAnnotation.x, 
+        y: pendingAnnotation.y, 
+        text: annotationText.trim(), 
+        color: pendingAnnotation.color 
+      }]);
+    }
+    setShowAnnotationModal(false);
+    setPendingAnnotation(null);
+    setAnnotationText('');
+  };
+
+  const handleAnnotationCancel = () => {
+    setShowAnnotationModal(false);
+    setPendingAnnotation(null);
+    setAnnotationText('');
   };
 
   return (
     <div className="viewer-container">
-      <div style={{ 
-        position: "fixed", 
-        top: 10, 
-        left: 10, 
-        zIndex: 50,
-        background: 'rgba(30, 41, 59, 0.6)',
-        backdropFilter: 'blur(10px)',
-        WebkitBackdropFilter: 'blur(10px)',
-        border: '1px solid rgba(148, 163, 184, 0.2)',
-        borderRadius: '8px',
-        padding: '8px 16px',
-        boxShadow: '0 4px 16px 0 rgba(0, 0, 0, 0.2)',
-      }}>
-        <a href="#/" style={{ 
-          color: "#9cc3ff", 
-          textDecoration: "none",
-          fontSize: '14px',
-          fontWeight: 500,
-        }}>← Back to Home</a>
-      </div>
+      {/* Annotation Modal */}
+      {showAnnotationModal && (
+        <div 
+          style={{ 
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={handleAnnotationCancel}
+        >
+          <div 
+            style={{
+              background: 'rgba(30, 41, 59, 0.95)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(148, 163, 184, 0.3)',
+              borderRadius: '12px',
+              padding: '24px',
+              minWidth: '400px',
+              boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ 
+              margin: '0 0 16px 0', 
+              fontSize: '18px', 
+              fontWeight: 600, 
+              color: '#f1f5f9',
+              textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
+            }}>Add Annotation</h3>
+            
+            <input
+              type="text"
+              value={annotationText}
+              onChange={(e) => setAnnotationText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAnnotationSubmit();
+                if (e.key === 'Escape') handleAnnotationCancel();
+              }}
+              placeholder="Enter annotation text..."
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '14px',
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid rgba(148, 163, 184, 0.3)',
+                borderRadius: '8px',
+                color: '#f1f5f9',
+                outline: 'none',
+                marginBottom: '16px',
+                boxSizing: 'border-box',
+              }}
+            />
+            
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              justifyContent: 'flex-end' 
+            }}>
+              <button
+                onClick={handleAnnotationCancel}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  background: 'rgba(51, 65, 85, 0.5)',
+                  border: '1px solid rgba(148, 163, 184, 0.3)',
+                  borderRadius: '6px',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(51, 65, 85, 0.7)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(51, 65, 85, 0.5)';
+                }}
+              >
+                Cancel
+              </button>
+              
+              <button
+                onClick={handleAnnotationSubmit}
+                disabled={!annotationText.trim()}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  background: annotationText.trim() ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
+                  border: `1px solid ${annotationText.trim() ? 'rgba(59, 130, 246, 0.7)' : 'rgba(148, 163, 184, 0.2)'}`,
+                  borderRadius: '6px',
+                  color: annotationText.trim() ? '#f1f5f9' : '#64748b',
+                  cursor: annotationText.trim() ? 'pointer' : 'not-allowed',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (annotationText.trim()) {
+                    e.currentTarget.style.background = 'rgba(59, 130, 246, 0.8)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (annotationText.trim()) {
+                    e.currentTarget.style.background = 'rgba(59, 130, 246, 0.6)';
+                  }
+                }}
+              >
+                Add Annotation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Home Icon Button - Top Right */}
+      <button
+        onClick={() => window.location.hash = '/'}
+        title="Back to Home"
+        style={{
+          position: "fixed",
+          top: 12,
+          right: 12,
+          zIndex: 50,
+          background: 'rgba(30, 41, 59, 0.5)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          border: '1px solid rgba(148, 163, 184, 0.15)',
+          borderRadius: '6px',
+          padding: '8px 12px',
+          cursor: 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '4px',
+          transition: 'all 0.2s ease',
+          boxShadow: '0 2px 8px 0 rgba(0, 0, 0, 0.15)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(30, 41, 59, 0.75)';
+          e.currentTarget.style.transform = 'scale(1.05)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(30, 41, 59, 0.5)';
+          e.currentTarget.style.transform = 'scale(1)';
+        }}
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#9cc3ff"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <polyline points="9 22 9 12 15 12 15 22" />
+        </svg>
+        <span style={{ fontSize: '10px', color: '#9cc3ff', fontWeight: 500 }}>Home</span>
+      </button>
 
       <div className="viewer-main">
         <div className="viewer-header">
@@ -575,10 +899,30 @@ const DicomViewer: React.FC = () => {
           )}
 
           {hasImage && (
-            <>
-              <canvas ref={canvasRef} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }} />
-              <canvas ref={overlayRef} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'auto' }} />
-            </>
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <canvas ref={canvasRef} style={{ 
+                  display: 'block',
+                  maxWidth: '100%', 
+                  maxHeight: '100%',
+                }} />
+                <canvas ref={overlayRef} style={{ 
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  pointerEvents: 'auto',
+                }} />
+              </div>
+            </div>
           )}
 
           <span className="orientation top">A</span>
@@ -588,52 +932,34 @@ const DicomViewer: React.FC = () => {
       </div>
 
       <div className="viewer-sidebar" style={{ padding: 0 }}>
-        <div style={{ width: '100%' }}>
-          <div className="sidebar-title" style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>NIfTI Viewer</span>
-              <button
-              onClick={resetView}
-              title="Reset view to default"
-              style={{
-                background: 'rgba(59, 130, 246, 0.4)',
-                backdropFilter: 'blur(10px)',
-                WebkitBackdropFilter: 'blur(10px)',
-                border: '1px solid rgba(59, 130, 246, 0.5)',
-                borderRadius: '6px',
-                padding: '6px 10px',
-                cursor: 'pointer',
-                color: '#fff',
-                fontSize: '11px',
-                fontWeight: 600,
-                transition: 'all 0.2s ease',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.6)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.4)';
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                <path d="M21 3v5h-5"/>
-                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                <path d="M3 21v-5h5"/>
-              </svg>
-              Reset
-              </button>
+          <div style={{ width: '100%' }}>
+          <div className="sidebar-title" style={{ 
+            padding: '24px 20px', 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            background: 'rgba(30, 41, 59, 0.3)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
+            marginBottom: '0px',
+          }}>
+            <span style={{
+              fontSize: '18px',
+              fontWeight: 600,
+              color: '#f1f5f9',
+              letterSpacing: '0.5px',
+              textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
+            }}>DICOM Viewer</span>
           </div>
 
           {/* VIEW Section */}
-          <div style={{ marginBottom: '0px' }}>
+          <div style={{ marginBottom: '0px', marginTop: '0px' }}>
               <button
               onClick={() => toggleSection('view')}
               style={{
                 width: '100%',
-                padding: '20px 16px',
+                padding: '24px 16px',
                 background: expandedSections.view 
                   ? 'rgba(51, 65, 85, 0.6)' 
                   : 'rgba(51, 65, 85, 0.3)',
@@ -643,7 +969,7 @@ const DicomViewer: React.FC = () => {
                 borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
                 borderRadius: '0',
                 color: '#fff',
-                fontSize: '15px',
+                fontSize: '16px',
                 fontWeight: 600,
                 textAlign: 'left',
                 cursor: 'pointer',
@@ -664,13 +990,59 @@ const DicomViewer: React.FC = () => {
               <span style={{ fontSize: '18px' }}>{expandedSections.view ? '▼' : '▶'}</span>
               </button>
             {expandedSections.view && (
-              <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {/* View Buttons */}
-            <div className="sidebar-buttons">
-                  <button className={`sidebar-btn ${currentView === 'axial' ? 'active' : ''}`} onClick={() => switchView('axial')}>Axial</button>
-                  <button className={`sidebar-btn ${currentView === 'coronal' ? 'active' : ''}`} onClick={() => switchView('coronal')}>Coronal</button>
-                  <button className={`sidebar-btn ${currentView === 'sagittal' ? 'active' : ''}`} onClick={() => switchView('sagittal')}>Sagittal</button>
-          </div>
+              <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {/* Views Section */}
+                <div>
+                  <div style={{ 
+                    fontSize: '13px', 
+                    fontWeight: 600, 
+                    color: '#94a3b8', 
+                    marginBottom: '12px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px'
+                  }}>
+                    Views
+                  </div>
+                  <div style={{ 
+                    display: 'grid', 
+                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gap: '8px'
+                  }}>
+                    <button 
+                      className={`sidebar-btn ${currentView === 'axial' ? 'active' : ''}`} 
+                      onClick={() => switchView('axial')}
+                      style={{
+                        padding: '12px 8px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
+                    >
+                      Axial
+                    </button>
+                    <button 
+                      className={`sidebar-btn ${currentView === 'coronal' ? 'active' : ''}`} 
+                      onClick={() => switchView('coronal')}
+                      style={{
+                        padding: '12px 8px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
+                    >
+                      Coronal
+                    </button>
+                    <button 
+                      className={`sidebar-btn ${currentView === 'sagittal' ? 'active' : ''}`} 
+                      onClick={() => switchView('sagittal')}
+                      style={{
+                        padding: '12px 8px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
+                    >
+                      Sagittal
+                    </button>
+                  </div>
+                </div>
 
                 {/* Interaction Mode Icons */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '8px 0' }}>
@@ -740,7 +1112,7 @@ const DicomViewer: React.FC = () => {
                       {!hasImage && <div style={{ height: '14px', marginBottom: '2px' }} />}
 
               <button
-                        onClick={() => setInteractionMode(interactionMode === 'scroll' ? null : 'scroll')}
+                        onClick={() => activateInteractionMode(interactionMode === 'scroll' ? null : 'scroll')}
                         title="Scroll through slices"
                         style={{
                           background: 'transparent',
@@ -771,7 +1143,7 @@ const DicomViewer: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <div style={{ height: '14px', marginBottom: '2px' }} />
               <button
-                        onClick={() => setInteractionMode(interactionMode === 'zoom' ? null : 'zoom')}
+                        onClick={() => activateInteractionMode(interactionMode === 'zoom' ? null : 'zoom')}
                         title="Zoom in/out"
                         style={{
                           background: 'transparent',
@@ -801,7 +1173,7 @@ const DicomViewer: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <div style={{ height: '14px', marginBottom: '2px' }} />
               <button
-                        onClick={() => setInteractionMode(interactionMode === 'pan' ? null : 'pan')}
+                        onClick={() => activateInteractionMode(interactionMode === 'pan' ? null : 'pan')}
                         title="Pan image"
                         style={{
                           background: 'transparent',
@@ -832,7 +1204,7 @@ const DicomViewer: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
                     {/* Brightness/Level Icon */}
                 <button
-                      onClick={() => setInteractionMode(interactionMode === 'brightness' ? null : 'brightness')}
+                      onClick={() => activateInteractionMode(interactionMode === 'brightness' ? null : 'brightness')}
                       title="Adjust brightness"
                       style={{
                         background: 'transparent',
@@ -864,7 +1236,7 @@ const DicomViewer: React.FC = () => {
 
                     {/* Contrast/Width Icon */}
                 <button
-                      onClick={() => setInteractionMode(interactionMode === 'contrast' ? null : 'contrast')}
+                      onClick={() => activateInteractionMode(interactionMode === 'contrast' ? null : 'contrast')}
                       title="Adjust contrast"
                       style={{
                         background: 'transparent',
@@ -899,7 +1271,7 @@ const DicomViewer: React.FC = () => {
               onClick={() => toggleSection('tools')}
               style={{
                 width: '100%',
-                padding: '20px 16px',
+                padding: '24px 16px',
                 background: expandedSections.tools 
                   ? 'rgba(51, 65, 85, 0.6)' 
                   : 'rgba(51, 65, 85, 0.3)',
@@ -909,7 +1281,7 @@ const DicomViewer: React.FC = () => {
                 borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
                 borderRadius: '0',
                 color: '#fff',
-                fontSize: '15px',
+                fontSize: '16px',
                 fontWeight: 600,
                 textAlign: 'left',
                 cursor: 'pointer',
@@ -934,15 +1306,114 @@ const DicomViewer: React.FC = () => {
               <span style={{ fontSize: '18px' }}>{expandedSections.tools ? '▼' : '▶'}</span>
             </button>
             {expandedSections.tools && (
-              <div style={{ padding: '12px' }}>
-                <div className="sidebar-buttons">
-                  <button className={`sidebar-btn ${mode === 'select' ? 'active' : ''}`} onClick={() => setMode('select')}>Select</button>
-                  <button className={`sidebar-btn ${mode === 'measure' ? 'active' : ''}`} onClick={() => setMode('measure')}>Measure</button>
-                  <button className={`sidebar-btn ${mode === 'annotate' ? 'active' : ''}`} onClick={() => setMode('annotate')}>Annotate</button>
-                  <button className={`sidebar-btn ${mode === 'crosshair' ? 'active' : ''}`} onClick={() => setMode('crosshair')}>Crosshair</button>
+              <div style={{ padding: '16px', display: 'flex', justifyContent: 'center', gap: '30px' }}>
+                {/* Measure Tool */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    onClick={() => activateMeasuringMode(mode === 'measure' ? 'none' : 'measure')}
+                    title="Measure distances"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '0',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: mode === 'measure' ? 1 : 0.6,
+                      transform: mode === 'measure' ? 'scale(1.1)' : 'scale(1)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                      e.currentTarget.style.transform = 'scale(1.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = mode === 'measure' ? '1' : '0.6';
+                      e.currentTarget.style.transform = mode === 'measure' ? 'scale(1.1)' : 'scale(1)';
+                    }}
+                  >
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={mode === 'measure' ? '#60a5fa' : '#94a3b8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.4 2.4 0 0 1 0-3.4l2.6-2.6a2.4 2.4 0 0 1 3.4 0Z"/>
+                      <path d="m14.5 12.5 2-2"/>
+                      <path d="m11.5 9.5 2-2"/>
+                      <path d="m8.5 6.5 2-2"/>
+                      <path d="m17.5 15.5 2-2"/>
+                    </svg>
+                  </button>
+                  <span style={{ fontSize: '11px', color: mode === 'measure' ? '#60a5fa' : '#94a3b8', fontWeight: 500 }}>Measure</span>
+                </div>
+
+                {/* Annotate Tool */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    onClick={() => activateMeasuringMode(mode === 'annotate' ? 'none' : 'annotate')}
+                    title="Add annotations"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '0',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: mode === 'annotate' ? 1 : 0.6,
+                      transform: mode === 'annotate' ? 'scale(1.1)' : 'scale(1)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                      e.currentTarget.style.transform = 'scale(1.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = mode === 'annotate' ? '1' : '0.6';
+                      e.currentTarget.style.transform = mode === 'annotate' ? 'scale(1.1)' : 'scale(1)';
+                    }}
+                  >
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={mode === 'annotate' ? '#60a5fa' : '#94a3b8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </button>
+                  <span style={{ fontSize: '11px', color: mode === 'annotate' ? '#60a5fa' : '#94a3b8', fontWeight: 500 }}>Annotate</span>
+                </div>
+
+                {/* Erase Tool */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    onClick={() => activateMeasuringMode(mode === 'erase' ? 'none' : 'erase')}
+                    title="Erase measurements and annotations"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '0',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: mode === 'erase' ? 1 : 0.6,
+                      transform: mode === 'erase' ? 'scale(1.1)' : 'scale(1)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                      e.currentTarget.style.transform = 'scale(1.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = mode === 'erase' ? '1' : '0.6';
+                      e.currentTarget.style.transform = mode === 'erase' ? 'scale(1.1)' : 'scale(1)';
+                    }}
+                  >
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={mode === 'erase' ? '#f87171' : '#94a3b8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
+                      <path d="M22 21H7"/>
+                      <path d="m5 11 9 9"/>
+                    </svg>
+                  </button>
+                  <span style={{ fontSize: '11px', color: mode === 'erase' ? '#f87171' : '#94a3b8', fontWeight: 500 }}>Erase</span>
+                </div>
               </div>
-            </div>
-          )}
+            )}
           </div>
 
           {/* TRANSFORM Section */}
@@ -951,7 +1422,7 @@ const DicomViewer: React.FC = () => {
               onClick={() => toggleSection('transform')}
               style={{
                 width: '100%',
-                padding: '20px 16px',
+                padding: '24px 16px',
                 background: expandedSections.transform 
                   ? 'rgba(51, 65, 85, 0.6)' 
                   : 'rgba(51, 65, 85, 0.3)',
@@ -961,7 +1432,7 @@ const DicomViewer: React.FC = () => {
                 borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
                 borderRadius: '0',
                 color: '#fff',
-                fontSize: '15px',
+                fontSize: '16px',
                 fontWeight: 600,
                 textAlign: 'left',
                 cursor: 'pointer',
@@ -999,7 +1470,7 @@ const DicomViewer: React.FC = () => {
               onClick={() => toggleSection('upload')}
               style={{
                 width: '100%',
-                padding: '20px 16px',
+                padding: '24px 16px',
                 background: expandedSections.upload 
                   ? 'rgba(51, 65, 85, 0.6)' 
                   : 'rgba(51, 65, 85, 0.3)',
@@ -1009,7 +1480,7 @@ const DicomViewer: React.FC = () => {
                 borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
                 borderRadius: '0',
                 color: '#fff',
-                fontSize: '15px',
+                fontSize: '16px',
                 fontWeight: 600,
                 textAlign: 'left',
                 cursor: 'pointer',
@@ -1039,6 +1510,51 @@ const DicomViewer: React.FC = () => {
 
       </div>
       </div>
+
+      {/* Reset Button - Bottom Right */}
+      <button
+        onClick={resetView}
+        title="Reset view to default"
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          zIndex: 50,
+          background: 'rgba(59, 130, 246, 0.4)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          border: '1px solid rgba(59, 130, 246, 0.5)',
+          borderRadius: '8px',
+          padding: '10px 16px',
+          cursor: 'pointer',
+          color: '#fff',
+          fontSize: '13px',
+          fontWeight: 600,
+          transition: 'all 0.2s ease',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          boxShadow: '0 4px 16px 0 rgba(59, 130, 246, 0.3)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(59, 130, 246, 0.6)';
+          e.currentTarget.style.transform = 'translateY(-2px)';
+          e.currentTarget.style.boxShadow = '0 6px 20px 0 rgba(59, 130, 246, 0.4)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(59, 130, 246, 0.4)';
+          e.currentTarget.style.transform = 'translateY(0)';
+          e.currentTarget.style.boxShadow = '0 4px 16px 0 rgba(59, 130, 246, 0.3)';
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+          <path d="M21 3v5h-5"/>
+          <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+          <path d="M3 21v-5h5"/>
+        </svg>
+        Reset View
+      </button>
 
     </div>
   );
