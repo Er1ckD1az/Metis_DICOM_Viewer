@@ -1,12 +1,42 @@
-﻿import { Link } from "react-router-dom";
+﻿import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
 
 export default function Landing() {
   console.log("Landing mounted");
+  const navigate = useNavigate();
+  
+  // Load dark mode preference from localStorage
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('darkMode');
+    return saved === 'true';
+  });
+
+  // Save dark mode preference to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('darkMode', isDarkMode.toString());
+  }, [isDarkMode]);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      console.log("File selected from landing page:", file.name);
+      navigate('/viewer', { state: { uploadedFile: file } });
+    }
+  };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f7f7fb", color: "#0f172a" }}>
+    <div style={{ 
+      minHeight: "100vh", 
+      background: isDarkMode ? "#0f172a" : "#f7f7fb", 
+      color: isDarkMode ? "#f1f5f9" : "#0f172a",
+      transition: "all 0.3s ease"
+    }}>
       {/* top nav */}
-      <header style={{ background: "#fff", borderBottom: "1px solid #e5e7eb" }}>
+      <header style={{ 
+        background: isDarkMode ? "#1e293b" : "#fff", 
+        borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+        transition: "all 0.3s ease"
+      }}>
         <div
           style={{
             maxWidth: 1120,
@@ -23,11 +53,12 @@ export default function Landing() {
                 width: 24,
                 height: 24,
                 borderRadius: 9999,
-                background: "#000",
+                background: isDarkMode ? "#3b82f6" : "#000",
                 color: "#fff",
                 display: "grid",
                 placeItems: "center",
                 fontSize: 12,
+                transition: "all 0.3s ease"
               }}
             >
               M
@@ -42,16 +73,98 @@ export default function Landing() {
         </div>
       </header>
 
+      {/* Dark Mode Toggle - Fixed to top right corner */}
+      <div style={{
+        position: "fixed",
+        top: 16,
+        right: 16,
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }}>
+        {/* Sun icon */}
+        <svg 
+          width="20" 
+          height="20" 
+          viewBox="0 0 24 24" 
+          fill="none" 
+          stroke={isDarkMode ? "#64748b" : "#f59e0b"} 
+          strokeWidth="2" 
+          strokeLinecap="round" 
+          strokeLinejoin="round"
+          style={{ transition: "all 0.3s ease" }}
+        >
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+
+        {/* Toggle switch */}
+        <button
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          style={{
+            background: isDarkMode ? "rgba(59, 130, 246, 0.2)" : "rgba(15, 23, 42, 0.1)",
+            border: `1px solid ${isDarkMode ? "rgba(59, 130, 246, 0.4)" : "rgba(15, 23, 42, 0.2)"}`,
+            borderRadius: 20,
+            padding: "3px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            transition: "all 0.3s ease",
+            position: "relative",
+            width: 48,
+            height: 24,
+            boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)"
+          }}
+          title={isDarkMode ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {/* Slider circle */}
+          <div style={{
+            width: 18,
+            height: 18,
+            borderRadius: "50%",
+            background: isDarkMode ? "#3b82f6" : "#0f172a",
+            position: "absolute",
+            left: isDarkMode ? 27 : 3,
+            transition: "all 0.3s ease",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.3)"
+          }} />
+        </button>
+
+        {/* Moon icon */}
+        <svg 
+          width="20" 
+          height="20" 
+          viewBox="0 0 24 24" 
+          fill="none" 
+          stroke={isDarkMode ? "#3b82f6" : "#64748b"} 
+          strokeWidth="2" 
+          strokeLinecap="round" 
+          strokeLinejoin="round"
+          style={{ transition: "all 0.3s ease" }}
+        >
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </div>
+
       {/* hero row */}
       <section style={{ maxWidth: 1120, margin: "0 auto", padding: "24px" }}>
         <div style={{ display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr" }}>
           {/* left hero card */}
           <div
             style={{
-              background: "#fff",
-              border: "1px solid #e5e7eb",
+              background: isDarkMode ? "#1e293b" : "#fff",
+              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
               borderRadius: 12,
               padding: 32,
+              transition: "all 0.3s ease"
             }}
           >
             <span
@@ -96,11 +209,12 @@ export default function Landing() {
           {/* right hero card (WITH image background) */}
           <div
             style={{
-              background: "#fff",
-              border: "1px solid #e5e7eb",
+              background: isDarkMode ? "#1e293b" : "#fff",
+              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
               borderRadius: 12,
               padding: 32,
               position: "relative",
+              transition: "all 0.3s ease"
             }}
           >
             <div
@@ -183,10 +297,11 @@ export default function Landing() {
       <section id="upload" style={{ maxWidth: 880, margin: "0 auto", padding: "24px" }}>
         <div
           style={{
-            background: "#fff",
-            border: "1px solid #e5e7eb",
+            background: isDarkMode ? "#1e293b" : "#fff",
+            border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
             borderRadius: 12,
             padding: 32,
+            transition: "all 0.3s ease"
           }}
         >
           <div style={{ textAlign: "center", maxWidth: 640, margin: "0 auto" }}>
@@ -201,11 +316,12 @@ export default function Landing() {
               marginTop: 16,
               display: "block",
               textAlign: "center",
-              border: "2px dashed #d1d5db",
+              border: isDarkMode ? "2px dashed #475569" : "2px dashed #d1d5db",
               borderRadius: 12,
               padding: 32,
               cursor: "pointer",
-              background: "#fafafa",
+              background: isDarkMode ? "#0f172a" : "#fafafa",
+              transition: "all 0.3s ease"
             }}
           >
             <div style={{ fontSize: 28 }}>⬆️</div>
@@ -213,7 +329,7 @@ export default function Landing() {
             <div style={{ fontSize: 13, opacity: 0.7 }}>
               Supports NIfTI (.nii, .nii.gz) and DICOM (.dcm) up to 500MB
             </div>
-            <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" />
+            <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" onChange={handleFileUpload} />
           </label>
 
           <div style={{ marginTop: 12, textAlign: "center" }}>
@@ -224,12 +340,13 @@ export default function Landing() {
                 alignItems: "center",
                 padding: "8px 12px",
                 borderRadius: 8,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
+                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+                background: isDarkMode ? "#1e293b" : "#fff",
                 cursor: "pointer",
+                transition: "all 0.3s ease"
               }}
             >
-              <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" />
+              <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" onChange={handleFileUpload} />
               <span>Choose File</span>
             </label>
           </div>
@@ -247,16 +364,23 @@ export default function Landing() {
 
         <div style={{ marginTop: 16, display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr" }}>
           <div
-            style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 24 }}
+            style={{ 
+              background: isDarkMode ? "#1e293b" : "#fff", 
+              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb", 
+              borderRadius: 12, 
+              padding: 24,
+              transition: "all 0.3s ease"
+            }}
           >
             <div style={{ fontSize: 18, fontWeight: 600 }}>Try Our Demo</div>
             <p style={{ marginTop: 6, opacity: 0.8 }}>
-              Don’t have a DICOM file? Launch the demo viewer and explore the tools.
+              Don't have a DICOM file? Launch the demo viewer and explore the tools.
             </p>
             <div style={{ marginTop: 12 }}>
               <Link
                 to="/viewer"
-                style={{ background: "#000", color: "#fff", padding: "10px 14px", borderRadius: 8 }}
+                state={{ demoMode: true }}
+                style={{ background: "#000", color: "#fff", padding: "10px 14px", borderRadius: 8, textDecoration: 'none', display: 'inline-block' }}
               >
                 ▶︎ Launch Demo Viewer
               </Link>
@@ -264,16 +388,23 @@ export default function Landing() {
           </div>
 
           <div
-            style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 24 }}
+            style={{ 
+              background: isDarkMode ? "#1e293b" : "#fff", 
+              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb", 
+              borderRadius: 12, 
+              padding: 24,
+              transition: "all 0.3s ease"
+            }}
           >
             <div
               style={{
                 height: 160,
                 borderRadius: 8,
-                border: "1px solid #e5e7eb",
-                background: "linear-gradient(135deg,#eef2f7,#e5e7eb)",
+                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+                background: isDarkMode ? "linear-gradient(135deg,#1e293b,#0f172a)" : "linear-gradient(135deg,#eef2f7,#e5e7eb)",
                 display: "grid",
                 placeItems: "center",
+                transition: "all 0.3s ease"
               }}
             >
               <div style={{ textAlign: "center" }}>
@@ -287,7 +418,12 @@ export default function Landing() {
       </section>
 
       {/* footer */}
-      <footer style={{ marginTop: 24, background: "#fff", borderTop: "1px solid #e5e7eb" }}>
+      <footer style={{ 
+        marginTop: 24, 
+        background: isDarkMode ? "#1e293b" : "#fff", 
+        borderTop: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+        transition: "all 0.3s ease"
+      }}>
         <div
           style={{
             maxWidth: 1120,
