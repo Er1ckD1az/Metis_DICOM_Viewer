@@ -10,6 +10,10 @@ const DicomViewer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Multi-grid refs for 4-viewer grid
+  const canvasRefs = useRef<Array<HTMLCanvasElement | null>>([null, null, null, null]);
+  const overlayRefs = useRef<Array<HTMLCanvasElement | null>>([null, null, null, null]);
+
   const [hasImage, setHasImage] = useState(false);
   const [currentSlice, setCurrentSlice] = useState(0);
   const [maxSlices, setMaxSlices] = useState(0);
@@ -475,17 +479,11 @@ const DicomViewer: React.FC = () => {
     });
   };
 
-
-
   const loadFileIntoWindow = (windowId: string, file: File) => {
     setViewerWindows(prev =>
       prev.map(w => (w.id === windowId ? { ...w, file, title: file.name } : w))
     );
   };
-
-
-
-
 
   // Update window position (for dragging)
   const updateWindowPosition = (id: string, x: number, y: number) => {
@@ -548,7 +546,6 @@ const DicomViewer: React.FC = () => {
       win.nv = nv;
 
       return () => {
-        nv.destroy?.();
         URL.revokeObjectURL(url);
       };
     }, [win.file, showCrosshair]);
@@ -1257,14 +1254,47 @@ const DicomViewer: React.FC = () => {
         </div>
 
         <div className="viewer-screen" ref={wrapperRef} style={{ position: 'relative' }}>
-          {!hasImage && (
-            <div className="empty-overlay">
-              <div className="empty-box">
-                <h3>No Image Loaded</h3>
-                <p>Upload a .nii file to begin viewing</p>
-              </div>
-            </div>
-          )}
+
+        <div className="viewer-grid">
+           {["Axial", "Coronal", "Sagittal", "3D Render"].map((label, i) => (
+              <div key={i} className="viewer-cell">
+      <div className="view-label">{label}</div>
+         {!hasImage ? (
+        <div className="empty-overlay">
+          <div className="empty-box">
+            <h3>No Image Loaded</h3>
+            <p>Upload a .nii file to begin viewing</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <canvas
+            ref={el => { canvasRefs.current[i] = el; }}
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
+            }}
+          />
+          <canvas
+            ref={el => { overlayRefs.current[i] = el; }}
+            className="overlay"
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              pointerEvents: "none",
+            }}
+          />
+        </>
+      )}
+    </div>
+  ))}
+</div>
+
+
 
           {hasImage && (
             <div style={{
