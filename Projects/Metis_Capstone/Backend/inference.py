@@ -192,3 +192,61 @@ def load_nifti_volume(file_path):
     volume = np.array(img.get_fdata(), dtype=np.float32)
     print(f"✅ Loaded volume: {volume.shape}")
     return volume
+
+def detect_modality_from_filename(filename):
+    filename_lower = filename.lower()
+    match = re.search(r'_(flair|t1ce|t1|t2)\.nii', filename_lower)
+    if match:
+        return match.group(1)
+    return None
+
+def find_sibling_files(file_path, detected_modality):
+    file_path = Path(file_path)
+    parent_dir = file_path.parent
+    
+    # Extract patient ID
+    filename = file_path.name
+    name_without_ext = filename.replace('.nii.gz', '').replace('.nii', '')
+    patient_id = name_without_ext.rsplit('_', 1)[0]
+    
+    modalities = ['flair', 't1', 't1ce', 't2']
+    sibling_paths = {}
+    missing = []
+    
+    for modality in modalities:
+        # Try both .nii and .nii.gz extensions
+        for ext in ['.nii.gz', '.nii']:
+            candidate = parent_dir / f"{patient_id}_{modality}{ext}"
+            if candidate.exists():
+                sibling_paths[modality] = str(candidate)
+                break
+        
+        if modality not in sibling_paths:
+            missing.append(f"{patient_id}_{modality}.nii[.gz]")
+    
+    if missing:
+        raise FileNotFoundError(f"Missing required modality files: {', '.join(missing)}")
+    
+    return sibling_paths
+
+
+def load_all_modalities(modality_paths):
+    import numpy as np
+    import nibabel as nib
+    
+    modality_order = ['flair', 't1', 't1ce', 't2']
+    volumes = []
+    
+    for modality in modality_order:
+        if modality not in modality_paths:
+            raise ValueError(f"Missing modality: {modality}")
+        
+        img = nib.load(modality_paths[modality])
+        volume = np.array(img.get_fdata(), dtype=np.float32)
+        volumes.append(volume)
+    
+    multi_modal_volume = np.stack(volumes, axis=-1)
+    
+    print(f"✅ Loaded all modalities: {multi_modal_volume.shape}")
+    
+    return multi_modal_volume

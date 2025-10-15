@@ -4,6 +4,32 @@ import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
 import { Niivue } from "@niivue/niivue";
 
+const API_BASE_URL = 'http://localhost:8000'; // Backend URL
+
+const uploadNiftiFile = async (file: File): Promise<{ 
+  mri_id: number; 
+  file_path: string; 
+  message: string 
+}> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE_URL}/mri`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Upload failed:', response.status, errorText);
+    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+  console.log('✅ Upload successful:', result);
+  return result;
+};
+
 const DicomViewer: React.FC = () => {
   const location = useLocation();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -696,6 +722,8 @@ const DicomViewer: React.FC = () => {
     if (!file) return;
     if (file.name.toLowerCase().endsWith('.nii') || file.name.toLowerCase().endsWith('.nii.gz')) {
         console.log('Valid NIfTI file detected, loading...');
+      const uploadResult = await uploadNiftiFile(file);
+      console.log('🟢 Uploaded to backend, MRI ID:', uploadResult.mri_id);
       await loadNiftiFile(file);
     } else {
         console.error('Please upload a .nii or .nii.gz file');
