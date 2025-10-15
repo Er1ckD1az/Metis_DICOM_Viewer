@@ -26,7 +26,7 @@ const uploadNiftiFile = async (file: File): Promise<{
   }
 
   const result = await response.json();
-  console.log('✅ Upload successful:', result);
+  console.log('Upload successful:', result);
   return result;
 };
 
