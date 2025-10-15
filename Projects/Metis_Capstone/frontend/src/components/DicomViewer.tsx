@@ -53,8 +53,8 @@ const DicomViewer: React.FC = () => {
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
   const drawingRef = useRef<{ drawing: boolean; x:number; y:number } | null>(null);
-  const [measurements, setMeasurements] = useState<Array<{ x1:number,y1:number,x2:number,y2:number }>>([]);
-  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string,color:string }>>([]);
+  const [measurements, setMeasurements] = useState<Array<{ x1:number,y1:number,x2:number,y2:number,windowId:number }>>([]);
+  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string,color:string,windowId:number }>>([]);
   const [hoveredAnnotation, setHoveredAnnotation] = useState<number | null>(null);
   const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null);
 
@@ -109,6 +109,12 @@ const DicomViewer: React.FC = () => {
       alert('Maximum of 4 windows allowed');
       return;
     }
+    
+    // Clear all measurements and annotations when adding a new window
+    setMeasurements([]);
+    setAnnotations([]);
+    setHoveredAnnotation(null);
+    
     const newWindow: WindowState = {
       id: nextWindowIdDynamic.current++,
       view: 'axial',
@@ -126,6 +132,12 @@ const DicomViewer: React.FC = () => {
       alert('Must have at least one window');
       return;
     }
+    
+    // Clear all measurements and annotations when removing a window
+    setMeasurements([]);
+    setAnnotations([]);
+    setHoveredAnnotation(null);
+    
     setDynamicWindows(prev => prev.filter(w => w.id !== id));
     // If we're removing the selected window, select the first remaining one
     if (id === selectedWindowId) {
@@ -316,8 +328,8 @@ const DicomViewer: React.FC = () => {
     ctx.scale(zoom, zoom);
     ctx.translate(-centerX, -centerY);
     
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
     // window/level - use per-window values
     const wlMin = winLevel - winWidth / 2;
@@ -330,7 +342,7 @@ const DicomViewer: React.FC = () => {
         if (val < wlMin) windowed[i + j * width] = 0;
         else if (val > wlMax) windowed[i + j * width] = 255;
         else {
-          const normalized = (val - wlMin) / (wlMax - wlMin);
+      const normalized = (val - wlMin) / (wlMax - wlMin);
           windowed[i + j * width] = Math.floor(Math.pow(normalized, 0.9) * 255);
         }
       }
@@ -409,6 +421,104 @@ const DicomViewer: React.FC = () => {
     }
   };
 
+  // Draw measurements and annotations on overlay for a specific window with zoom/pan transformations
+  const drawMeasurementsAndAnnotations = (overlayIdx: number, windowId: number) => {
+    const overlay = overlayRefs.current[overlayIdx];
+    if (!overlay) return;
+
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    // Get the window's zoom and pan state
+    const window = dynamicWindows.find(w => w.id === windowId);
+    if (!window) return;
+
+    const zoom = window.zoomLevel;
+    const pan = window.panOffset;
+
+    const dpr = globalThis.devicePixelRatio || 1;
+    
+    // Set canvas size to match its display size
+    const parent = overlay.parentElement;
+    const containerWidth = parent?.clientWidth || 400;
+    const containerHeight = parent?.clientHeight || 400;
+    
+    if (parent) {
+      overlay.width = containerWidth * dpr;
+      overlay.height = containerHeight * dpr;
+      overlay.style.width = `${containerWidth}px`;
+      overlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Apply the same transformations as the main canvas to make annotations stick to the image
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    
+    // Apply transformations: DPR first, then zoom and pan (same as main canvas)
+    const centerX = containerWidth / 2;
+    const centerY = containerHeight / 2;
+    
+    // Start with DPR scaling
+    ctx.scale(dpr, dpr);
+    
+    // Apply pan (in screen space)
+    ctx.translate(pan.x, pan.y);
+    
+    // Move to center, apply zoom, move back
+    ctx.translate(centerX, centerY);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-centerX, -centerY);
+
+    // Draw only measurements for this window
+    // Line width and font size should stay constant regardless of zoom
+    const baseLineWidth = 2 / zoom;
+    const baseFontSize = 12 / zoom;
+    const baseCircleRadius = 8 / zoom;
+    
+    measurements.filter(m => m.windowId === windowId).forEach((m) => {
+      ctx.beginPath();
+      ctx.moveTo(m.x1, m.y1);
+      ctx.lineTo(m.x2, m.y2);
+      ctx.strokeStyle = '#00FF00';
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+      
+      const dx = m.x2 - m.x1;
+      const dy = m.y2 - m.y1;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      ctx.fillStyle = '#00FF00';
+      ctx.font = `${baseFontSize}px system-ui`;
+      ctx.fillText(`${distance.toFixed(1)}px`, (m.x1 + m.x2) / 2 + 5 / zoom, (m.y1 + m.y2) / 2 - 5 / zoom);
+    });
+
+    // Draw only annotations for this window
+    const windowAnnotations = annotations.filter(a => a.windowId === windowId);
+    windowAnnotations.forEach((a) => {
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, baseCircleRadius, 0, Math.PI * 2);
+      ctx.fillStyle = a.color;
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+
+      // Draw text if hovered (need to find the actual index in the full annotations array)
+      const fullIdx = annotations.indexOf(a);
+      if (hoveredAnnotation === fullIdx && a.text) {
+        const textOffset = 12 / zoom;
+        const boxWidth = 100 / zoom;
+        const boxHeight = 24 / zoom;
+        const textPadding = 4 / zoom;
+        
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect(a.x + textOffset, a.y - 20 / zoom, boxWidth, boxHeight);
+        ctx.fillStyle = '#fff';
+        ctx.font = `${baseFontSize}px system-ui`;
+        ctx.fillText(a.text, a.x + textOffset + textPadding, a.y - textPadding);
+      }
+    });
+  };
+
   // Render all views to the grid (dynamic windows) - using per-window state
   const renderAllViews = () => {
     if (!niftiData) {
@@ -437,6 +547,10 @@ const DicomViewer: React.FC = () => {
         window.zoomLevel,
         window.panOffset
       );
+      
+      // Draw measurements and annotations on the overlay for this specific window
+      drawMeasurementsAndAnnotations(idx, window.id);
+      
       console.log(`Rendered ${view} view in window ${window.id} at slice ${sliceIndex}`);
     });
   };
@@ -567,11 +681,11 @@ const DicomViewer: React.FC = () => {
       console.log('File input changed!');
       const file = (e.target as HTMLInputElement).files?.[0];
       console.log('Selected file:', file?.name);
-      if (!file) return;
-      if (file.name.toLowerCase().endsWith('.nii') || file.name.toLowerCase().endsWith('.nii.gz')) {
+    if (!file) return;
+    if (file.name.toLowerCase().endsWith('.nii') || file.name.toLowerCase().endsWith('.nii.gz')) {
         console.log('Valid NIfTI file detected, loading...');
-        await loadNiftiFile(file);
-      } else {
+      await loadNiftiFile(file);
+    } else {
         console.error('Please upload a .nii or .nii.gz file');
       }
     };
@@ -954,10 +1068,15 @@ const DicomViewer: React.FC = () => {
 
 
 
-  // overlay events for measure/annotate
+  // overlay events for measure/annotate - work with selected window
   useEffect(() => {
-    // Use the first overlay (Axial view) for now
-    const overlay = overlayRefs.current[0];
+    if (mode === 'none') return; // Only attach when a measurement mode is active
+    
+    // Find the index of the selected window
+    const selectedWindowIndex = dynamicWindows.findIndex(w => w.id === selectedWindowId);
+    if (selectedWindowIndex === -1) return;
+    
+    const overlay = overlayRefs.current[selectedWindowIndex];
     if (!overlay) return;
     const rect = () => overlay.getBoundingClientRect();
 
@@ -984,39 +1103,73 @@ const DicomViewer: React.FC = () => {
       });
 
       if (mode === 'erase') {
-        // Check if clicking on an annotation
-        let annotationRemoved = false;
-        annotations.forEach((a, idx) => {
-          const dx = p.x - a.x;
-          const dy = p.y - a.y;
-          const distance = Math.sqrt(dx*dx + dy*dy);
-          if (distance <= 12 && !annotationRemoved) {
-            setAnnotations(prev => prev.filter((_, i) => i !== idx));
-            annotationRemoved = true;
-          }
-        });
-
-        // Check if clicking on a measurement
-        if (!annotationRemoved) {
-          measurements.forEach((m, idx) => {
-            // Calculate distance from point to line segment
-            const dx = m.x2 - m.x1;
-            const dy = m.y2 - m.y1;
-            const length = Math.sqrt(dx*dx + dy*dy);
-            if (length === 0) return;
-
-            const t = Math.max(0, Math.min(1, ((p.x - m.x1) * dx + (p.y - m.y1) * dy) / (length * length)));
-            const projX = m.x1 + t * dx;
-            const projY = m.y1 + t * dy;
-            const distToLine = Math.sqrt((p.x - projX)**2 + (p.y - projY)**2);
-
-            if (distToLine <= 8) {
-              setMeasurements(prev => prev.filter((_, i) => i !== idx));
+        // Transform mouse position to match annotation/measurement coordinate space
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Reverse the transformations to get annotation space coordinates
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
+          // Check if clicking on an annotation (only for selected window)
+          let annotationRemoved = false;
+          annotations.forEach((a, idx) => {
+            if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
+            const dx = transformedX - a.x;
+            const dy = transformedY - a.y;
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            if (distance <= 12 && !annotationRemoved) {
+              setAnnotations(prev => prev.filter((_, i) => i !== idx));
+              annotationRemoved = true;
             }
           });
+
+          // Check if clicking on a measurement (only for selected window)
+          if (!annotationRemoved) {
+            measurements.forEach((m, idx) => {
+              if (m.windowId !== selectedWindowId) return; // Only check measurements for selected window
+              // Calculate distance from point to line segment
+              const dx = m.x2 - m.x1;
+              const dy = m.y2 - m.y1;
+              const length = Math.sqrt(dx*dx + dy*dy);
+              if (length === 0) return;
+
+              const t = Math.max(0, Math.min(1, ((transformedX - m.x1) * dx + (transformedY - m.y1) * dy) / (length * length)));
+              const projX = m.x1 + t * dx;
+              const projY = m.y1 + t * dy;
+              const distToLine = Math.sqrt((transformedX - projX)**2 + (transformedY - projY)**2);
+
+              if (distToLine <= 8) {
+                setMeasurements(prev => prev.filter((_, i) => i !== idx));
+              }
+            });
+          }
         }
       } else if (mode === 'measure' || mode === 'annotate'){
-        drawingRef.current = { drawing: true, x: p.x, y: p.y };
+        // Transform mouse coordinates to image space for storing
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Transform to image space coordinates
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
+          drawingRef.current = { drawing: true, x: transformedX, y: transformedY };
+        }
       }
     };
 
@@ -1030,55 +1183,125 @@ const DicomViewer: React.FC = () => {
         setCursorPosition(null);
       }
 
-      // Check if hovering over an annotation (works in all modes except erase)
+      // Check if hovering over an annotation (works in all modes except erase, only for selected window)
       if (mode !== 'erase') {
-        let foundHover = false;
-        annotations.forEach((a, idx) => {
-          const dx = p.x - a.x;
-          const dy = p.y - a.y;
-          const distance = Math.sqrt(dx*dx + dy*dy);
-          if (distance <= 8) {
-            setHoveredAnnotation(idx);
-            foundHover = true;
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Transform mouse position to match annotation coordinate space
+          // Reverse the transformations: un-center, un-zoom, un-pan
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
+          let foundHover = false;
+          annotations.forEach((a, idx) => {
+            if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
+            const dx = transformedX - a.x;
+            const dy = transformedY - a.y;
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            if (distance <= 8) {
+              setHoveredAnnotation(idx);
+              foundHover = true;
+            }
+          });
+          if (!foundHover && hoveredAnnotation !== null) {
+            setHoveredAnnotation(null);
           }
-        });
-        if (!foundHover && hoveredAnnotation !== null) {
-          setHoveredAnnotation(null);
         }
       }
 
       if (!drawingRef.current) return;
 
       if (mode === 'measure'){
-        // live preview: redraw overlays by calling renderAllViews (which clears overlays) then draw line
+        // live preview: redraw overlays by calling renderAllViews (which redraws existing measurements with transformations)
         renderAllViews();
         const octx = overlay.getContext('2d');
         if (!octx) return;
+        
+        // Get the selected window's zoom and pan
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (!selectedWindow) return;
+        const zoom = selectedWindow.zoomLevel;
+        const pan = selectedWindow.panOffset;
+        
         const dpr = window.devicePixelRatio || 1;
-        octx.setTransform(dpr,0,0,dpr,0,0);
+        const parent = overlay.parentElement;
+        const containerWidth = parent?.clientWidth || 400;
+        const containerHeight = parent?.clientHeight || 400;
+        
+        // Apply the same transformations as the main canvas
+        const centerX = containerWidth / 2;
+        const centerY = containerHeight / 2;
+        
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.scale(dpr, dpr);
+        octx.translate(pan.x, pan.y);
+        octx.translate(centerX, centerY);
+        octx.scale(zoom, zoom);
+        octx.translate(-centerX, -centerY);
+        
+        // Transform current mouse position to image space
+        const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+        const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+        
+        // Draw preview line (in image space coordinates)
         octx.beginPath();
         octx.moveTo(drawingRef.current.x, drawingRef.current.y);
-        octx.lineTo(p.x, p.y);
+        octx.lineTo(transformedX, transformedY);
         octx.strokeStyle = '#00FF00';
-        octx.lineWidth = 2;
+        octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
-        const dx = p.x - drawingRef.current.x;
-        const dy = p.y - drawingRef.current.y;
+        
+        const dx = transformedX - drawingRef.current.x;
+        const dy = transformedY - drawingRef.current.y;
         octx.fillStyle = '#00FF00';
-        octx.font = '12px system-ui';
-        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + p.x)/2 + 5, (drawingRef.current.y + p.y)/2 - 5);
+        octx.font = `${12 / zoom}px system-ui`; // Keep font size constant
+        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + transformedX)/2 + 5 / zoom, (drawingRef.current.y + transformedY)/2 - 5 / zoom);
       } else if (mode === 'annotate'){
         renderAllViews();
         const octx = overlay.getContext('2d');
         if (!octx) return;
+        
+        // Get the selected window's zoom and pan
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (!selectedWindow) return;
+        const zoom = selectedWindow.zoomLevel;
+        const pan = selectedWindow.panOffset;
+        
         const dpr = window.devicePixelRatio || 1;
-        octx.setTransform(dpr,0,0,dpr,0,0);
+        const parent = overlay.parentElement;
+        const containerWidth = parent?.clientWidth || 400;
+        const containerHeight = parent?.clientHeight || 400;
+        
+        // Apply the same transformations as the main canvas
+        const centerX = containerWidth / 2;
+        const centerY = containerHeight / 2;
+        
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.scale(dpr, dpr);
+        octx.translate(pan.x, pan.y);
+        octx.translate(centerX, centerY);
+        octx.scale(zoom, zoom);
+        octx.translate(-centerX, -centerY);
+        
+        // Transform current mouse position to image space
+        const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+        const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+        
+        // Draw preview circle (in image space coordinates)
         octx.beginPath();
-        octx.arc(p.x, p.y, 8, 0, Math.PI*2);
-        octx.fillStyle = '#FFAA00';
+        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2); // Keep circle size constant
+        octx.fillStyle = '#FF8C00'; // Orange
         octx.fill();
         octx.strokeStyle = '#fff';
-        octx.lineWidth = 2;
+        octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
       }
     };
@@ -1087,19 +1310,33 @@ const DicomViewer: React.FC = () => {
       const ref = drawingRef.current;
       if (!ref) return;
       const p = toLocal(ev);
+      
+      // Transform mouse coordinates to image space
+      const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+      if (!selectedWindow) return;
+      
+      const zoom = selectedWindow.zoomLevel;
+      const pan = selectedWindow.panOffset;
+      const parent = overlay.parentElement;
+      const containerWidth = parent?.clientWidth || 400;
+      const containerHeight = parent?.clientHeight || 400;
+      const centerX = containerWidth / 2;
+      const centerY = containerHeight / 2;
+      
+      const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+      const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
 
       if (mode === 'measure') {
         setMeasurements(ms => [
           ...ms,
-          { x1: ref.x, y1: ref.y, x2: p.x, y2: p.y },
+          { x1: ref.x, y1: ref.y, x2: transformedX, y2: transformedY, windowId: selectedWindowId },
         ]);
       } else if (mode === 'annotate') {
-        // Generate random color for the annotation
-        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
-        const color = colors[Math.floor(Math.random() * colors.length)];
+        // Always use orange color for annotations
+        const color = '#FF8C00'; // Orange
 
-        // Show modal instead of browser prompt
-        setPendingAnnotation({ x: p.x, y: p.y, color });
+        // Show modal for annotation text
+        setPendingAnnotation({ x: transformedX, y: transformedY, color });
         setAnnotationText('');
         setShowAnnotationModal(true);
       }
@@ -1123,7 +1360,26 @@ const DicomViewer: React.FC = () => {
       overlay.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [mode, measurements, annotations, hoveredAnnotation]);
+  }, [mode, measurements, annotations, hoveredAnnotation, selectedWindowId, dynamicWindows]);
+
+  // Set cursor based on active mode
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    // Set custom cursors for each mode
+    if (mode === 'measure') {
+      wrapper.style.cursor = 'crosshair';
+    } else if (mode === 'annotate') {
+      wrapper.style.cursor = 'cell'; // Plus sign cursor for placing annotations
+    } else if (mode === 'erase') {
+      wrapper.style.cursor = 'not-allowed'; // X/delete cursor
+    } else if (interactionMode === 'pan') {
+      wrapper.style.cursor = 'grab';
+    } else {
+      wrapper.style.cursor = 'default';
+    }
+  }, [mode, interactionMode]);
 
   // Interaction mode handlers (scroll, zoom, pan) - now affects only selected window
   useEffect(() => {
@@ -1176,9 +1432,9 @@ const DicomViewer: React.FC = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isPanning.current) {
-        const dx = e.clientX - lastPanPos.current.x;
-        const dy = e.clientY - lastPanPos.current.y;
-        lastPanPos.current = { x: e.clientX, y: e.clientY };
+          const dx = e.clientX - lastPanPos.current.x;
+          const dy = e.clientY - lastPanPos.current.y;
+          lastPanPos.current = { x: e.clientX, y: e.clientY };
         
         if (interactionMode === 'pan') {
           // Pan in selected window only - use functional update to get current state
@@ -1272,7 +1528,8 @@ const DicomViewer: React.FC = () => {
         x: pendingAnnotation.x,
         y: pendingAnnotation.y,
         text: annotationText.trim(),
-        color: pendingAnnotation.color
+        color: pendingAnnotation.color,
+        windowId: selectedWindowId
       }]);
     }
     setShowAnnotationModal(false);
@@ -1510,7 +1767,11 @@ const DicomViewer: React.FC = () => {
                   boxShadow: selectedWindowId === window.id
                     ? '0 0 20px rgba(59, 130, 246, 0.5)'
                     : 'none',
-                  cursor: 'pointer',
+                  cursor: mode === 'measure' ? 'crosshair' :
+                         mode === 'annotate' ? 'cell' :
+                         mode === 'erase' ? 'not-allowed' :
+                         interactionMode === 'pan' ? 'grab' :
+                         'default', // Don't use 'pointer' - let measurement modes take precedence
                   transition: 'all 0.2s ease',
                 }}
               >
@@ -1600,47 +1861,65 @@ const DicomViewer: React.FC = () => {
                 </div>
 
                 {/* Window content - separate canvases for 2D vs 3D to avoid context conflicts */}
-                {!hasImage ? (
-                  <div className="empty-overlay">
-                    <div className="empty-box">
-                      <h3>No Image Loaded</h3>
-                      <p>Upload a .nii file to begin viewing</p>
-                    </div>
-                  </div>
+         {!hasImage ? (
+        <div className="empty-overlay">
+          <div className="empty-box">
+            <h3>No Image Loaded</h3>
+            <p>Upload a .nii file to begin viewing</p>
+          </div>
+        </div>
                 ) : window.view === '3d' ? (
-                  <canvas
+          <canvas
                     key={`3d-${window.id}`} // Force remount when switching to 3D
                     ref={el => { 
                       if (el) {
                         canvasRefs.current[idx] = el;
                       }
                     }}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      height: "100%",
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
                       pointerEvents: 'auto', // Enable interaction for 3D
-                    }}
-                  />
+            }}
+          />
                 ) : (
-                  <canvas
-                    key={`2d-${window.id}`} // Force remount when switching to 2D
-                    ref={el => { 
-                      if (el) {
-                        canvasRefs.current[idx] = el;
-                      }
-                    }}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      height: "100%",
-                      pointerEvents: 'none',
-                    }}
-                  />
+                  <>
+                    <canvas
+                      key={`2d-${window.id}`} // Force remount when switching to 2D
+                      ref={el => { 
+                        if (el) {
+                          canvasRefs.current[idx] = el;
+                        }
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        height: "100%",
+                        pointerEvents: 'none',
+                      }}
+                    />
+                    {/* Overlay canvas for measurements and annotations */}
+                    <canvas
+                      ref={el => {
+                        if (el) {
+                          overlayRefs.current[idx] = el;
+                        }
+                      }}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        pointerEvents: mode !== 'none' ? 'auto' : 'none', // Enable clicks when measurement mode active
+                      }}
+                    />
+                  </>
                 )}
-              </div>
-            ))}
-          </div>
+    </div>
+  ))}
+</div>
 
           <span className="orientation top">A</span>
           <span className="orientation left">R</span>
@@ -1648,7 +1927,7 @@ const DicomViewer: React.FC = () => {
         </div>
       </div>
 
-      <div className="viewer-sidebar" style={{ padding: 0 }}>
+      <div className="viewer-sidebar" style={{ padding: 0, overflowY: 'auto', height: '100vh' }}>
           <div style={{ width: '100%' }}>
           <div className="sidebar-title" style={{
             padding: '24px 20px',
@@ -1717,7 +1996,7 @@ const DicomViewer: React.FC = () => {
                     {/* Scroll/Stack Icon */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <div style={{ height: '14px', marginBottom: '2px' }} />
-                      <button
+              <button
                         onClick={() => activateInteractionMode(interactionMode === 'scroll' ? null : 'scroll')}
                         title="Scroll through slices"
                         style={{
@@ -1742,7 +2021,7 @@ const DicomViewer: React.FC = () => {
                           <polyline points="15 11 12 14 9 11"/>
                         </svg>
                         <span style={{ fontSize: '9px', color: interactionMode === 'scroll' ? '#3b82f6' : '#94a3b8', fontWeight: 500 }}>Scroll</span>
-                      </button>
+              </button>
                     </div>
 
                     {/* Zoom/Magnify Icon */}
