@@ -2427,14 +2427,14 @@ const DicomViewer: React.FC = () => {
           alert("Please load an image before running prediction.");
           return;
         }
-        console.log("🧠 Running model prediction...");
+        console.log("Running model prediction...");
 
         // Simulate model output for now (replace with your model call)
         const simulatedMask = new Float32Array(niftiData.length).map(() =>
           Math.random() > 0.98 ? 1 : 0
         );
         setPredictionMask(simulatedMask);
-        alert("✅ Prediction completed!");
+        alert("Prediction completed!");
       }}
       style={{
         background: 'rgba(59,130,246,0.6)',
