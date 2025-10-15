@@ -149,9 +149,21 @@ const DicomViewer: React.FC = () => {
   };
 
   const changeWindowView = (id: number, view: ViewType) => {
-    setDynamicWindows(prev => prev.map(w => 
-      w.id === id ? { ...w, view } : w
-    ));
+    setDynamicWindows(prev => prev.map(w => {
+      if (w.id !== id) return w;
+      
+      // Set slice to middle of the view
+      let middleSlice = 0;
+      if (view === 'axial') {
+        middleSlice = Math.floor(dimensions[2] / 2);
+      } else if (view === 'coronal') {
+        middleSlice = Math.floor(dimensions[1] / 2);
+      } else if (view === 'sagittal') {
+        middleSlice = Math.floor(dimensions[0] / 2);
+      }
+      
+      return { ...w, view, slice: middleSlice };
+    }));
   };
 
   // Update per-window state
