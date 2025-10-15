@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
@@ -16,23 +16,35 @@ const DicomViewer: React.FC = () => {
   const nv3DRefs = useRef<Map<number, any>>(new Map());
 
   const [hasImage, setHasImage] = useState(false);
-  const [currentSlice, setCurrentSlice] = useState(0);
-  const [maxSlices, setMaxSlices] = useState(0);
-  const [currentView, setCurrentView] = useState<'axial' | 'coronal' | 'sagittal'>('axial');
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
   const [dimensions, setDimensions] = useState<[number, number, number]>([0, 0, 0]);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
 
-  // Dynamic windows state
+  // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
-  const [dynamicWindows, setDynamicWindows] = useState<Array<{ id: number; view: ViewType }>>([
-    { id: 1, view: 'axial' } // Start with 1 axial window
+  type WindowState = {
+    id: number;
+    view: ViewType;
+    slice: number;
+    windowLevel: number;
+    windowWidth: number;
+    zoomLevel: number;
+    panOffset: { x: number; y: number };
+  };
+  
+  const [dynamicWindows, setDynamicWindows] = useState<WindowState[]>([
+    { 
+      id: 1, 
+      view: 'axial',
+      slice: 0,
+      windowLevel: 200,
+      windowWidth: 600,
+      zoomLevel: 1,
+      panOffset: { x: 0, y: 0 }
+    }
   ]);
+  const [selectedWindowId, setSelectedWindowId] = useState<number>(1); // Track selected window
   const nextWindowIdDynamic = useRef(2);
-  const [windowLevel, setWindowLevel] = useState(200);
-  const [windowWidth, setWindowWidth] = useState(600);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const isPanning = useRef(false);
   const lastPanPos = useRef({ x: 0, y: 0 });
 
@@ -97,9 +109,14 @@ const DicomViewer: React.FC = () => {
       alert('Maximum of 4 windows allowed');
       return;
     }
-    const newWindow = {
+    const newWindow: WindowState = {
       id: nextWindowIdDynamic.current++,
-      view: 'axial' as ViewType
+      view: 'axial',
+      slice: Math.floor(dimensions[2] / 2),
+      windowLevel: 200,
+      windowWidth: 600,
+      zoomLevel: 1,
+      panOffset: { x: 0, y: 0 }
     };
     setDynamicWindows(prev => [...prev, newWindow]);
   };
@@ -110,11 +127,25 @@ const DicomViewer: React.FC = () => {
       return;
     }
     setDynamicWindows(prev => prev.filter(w => w.id !== id));
+    // If we're removing the selected window, select the first remaining one
+    if (id === selectedWindowId) {
+      const remaining = dynamicWindows.filter(w => w.id !== id);
+      if (remaining.length > 0) {
+        setSelectedWindowId(remaining[0].id);
+      }
+    }
   };
 
   const changeWindowView = (id: number, view: ViewType) => {
     setDynamicWindows(prev => prev.map(w => 
       w.id === id ? { ...w, view } : w
+    ));
+  };
+
+  // Update per-window state
+  const updateWindowState = (id: number, updates: Partial<WindowState>) => {
+    setDynamicWindows(prev => prev.map(w =>
+      w.id === id ? { ...w, ...updates } : w
     ));
   };
 
@@ -173,9 +204,17 @@ const DicomViewer: React.FC = () => {
 
       setNiftiData(rotated);
       setDimensions([y, x, z]);
-      setMaxSlices(z - 1);
-      setCurrentSlice(Math.floor(z/2));
       setHasImage(true);
+      
+      // Initialize all windows with correct default slice values
+      setDynamicWindows(prev => prev.map(window => ({
+        ...window,
+        slice: window.view === 'axial' ? Math.floor(z / 2) :
+               window.view === 'coronal' ? Math.floor(x / 2) :
+               window.view === 'sagittal' ? Math.floor(y / 2) :
+               0
+      })));
+      
       console.log("🟢 NIfTI loaded successfully!", {
         dimensions: [y, x, z],
         dataLength: rotated.length,
@@ -221,11 +260,15 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  // Render a single view to a specific canvas
+  // Render a single view to a specific canvas with per-window settings
   const renderViewToCanvas = (
     canvas: HTMLCanvasElement,
     view: 'axial' | 'coronal' | 'sagittal',
-    sliceIndex: number
+    sliceIndex: number,
+    winLevel: number,
+    winWidth: number,
+    zoom: number,
+    pan: { x: number; y: number }
   ) => {
     if (!niftiData) return;
 
@@ -245,23 +288,40 @@ const DicomViewer: React.FC = () => {
     const displayHeight = Math.floor(height * scale);
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = displayWidth * dpr;
-    canvas.height = displayHeight * dpr;
-    canvas.style.width = `${displayWidth}px`;
-    canvas.style.height = `${displayHeight}px`;
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerHeight * dpr;
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerHeight}px`;
 
-    // scale context for DPR
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Apply zoom and pan transformations
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, containerWidth * dpr, containerHeight * dpr);
+    
+    // Fill canvas with pure black first
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, containerWidth * dpr, containerHeight * dpr);
+    
+    // Apply transformations: DPR first, then zoom and pan
+    const centerX = containerWidth / 2;
+    const centerY = containerHeight / 2;
+    
+    // Start with DPR scaling
+    ctx.scale(dpr, dpr);
+    
+    // Apply pan (in screen space)
+    ctx.translate(pan.x, pan.y);
+    
+    // Move to center, apply zoom, move back
+    ctx.translate(centerX, centerY);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-centerX, -centerY);
+    
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
-    // Fill canvas with pure black first
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, displayWidth, displayHeight);
-
-    // window/level
-    const wlMin = windowLevel - windowWidth / 2;
-    const wlMax = windowLevel + windowWidth / 2;
+    // window/level - use per-window values
+    const wlMin = winLevel - winWidth / 2;
+    const wlMax = winLevel + winWidth / 2;
     const windowed = new Uint8ClampedArray(width * height);
 
     for (let j = 0; j < height; j++) {
@@ -332,11 +392,24 @@ const DicomViewer: React.FC = () => {
       }
     }
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.putImageData(imageData, 0, 0);
+    // Create temporary canvas for the image data
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = displayWidth;
+    tempCanvas.height = displayHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (tempCtx) {
+      tempCtx.putImageData(imageData, 0, 0);
+      
+      // Center the image in the container
+      const offsetX = (containerWidth - displayWidth) / 2;
+      const offsetY = (containerHeight - displayHeight) / 2;
+      
+      // Draw the temp canvas onto the main canvas with current transformations
+      ctx.drawImage(tempCanvas, offsetX, offsetY, displayWidth, displayHeight);
+    }
   };
 
-  // Render all views to the grid (dynamic windows)
+  // Render all views to the grid (dynamic windows) - using per-window state
   const renderAllViews = () => {
     if (!niftiData) {
       console.log('renderAllViews: no niftiData');
@@ -345,27 +418,35 @@ const DicomViewer: React.FC = () => {
 
     console.log('renderAllViews called for', dynamicWindows.length, 'windows');
 
-    // Render each window based on its view type
+    // Render each window based on its view type and individual state
     dynamicWindows.forEach((window, idx) => {
       const canvas = canvasRefs.current[idx];
       if (!canvas || window.view === '3d') return; // Skip 3D windows (handled separately)
 
       const view = window.view as 'axial' | 'coronal' | 'sagittal';
-      let sliceIndex: number;
+      
+      // Use the window's own slice index
+      const sliceIndex = window.slice;
 
-      // Determine which slice to show
-      if (view === 'axial') {
-        sliceIndex = currentView === 'axial' ? currentSlice : Math.floor(dimensions[2] / 2);
-      } else if (view === 'coronal') {
-        sliceIndex = currentView === 'coronal' ? currentSlice : Math.floor(dimensions[1] / 2);
-      } else { // sagittal
-        sliceIndex = currentView === 'sagittal' ? currentSlice : Math.floor(dimensions[0] / 2);
-      }
-
-      renderViewToCanvas(canvas, view, sliceIndex);
-      console.log(`Rendered ${view} view in window ${idx}`);
+      renderViewToCanvas(
+        canvas, 
+        view, 
+        sliceIndex, 
+        window.windowLevel, 
+        window.windowWidth,
+        window.zoomLevel,
+        window.panOffset
+      );
+      console.log(`Rendered ${view} view in window ${window.id} at slice ${sliceIndex}`);
     });
   };
+
+  // Create a stable reference that only changes when window structure changes (not properties like zoom/brightness)
+  const windowStructureKey = dynamicWindows.map(w => `${w.id}-${w.view}`).join(',');
+  const windowStructure = useMemo(() => 
+    dynamicWindows.map(w => ({ id: w.id, view: w.view })),
+    [windowStructureKey]
+  );
 
   // Initialize 3D rendering for any window with view '3d' - MUST happen BEFORE 2D rendering
   useEffect(() => {
@@ -454,13 +535,13 @@ const DicomViewer: React.FC = () => {
       });
       nv3DRefs.current.clear();
     };
-  }, [currentFile, dynamicWindows]);
+  }, [currentFile, windowStructure]);
 
   // Render 2D views - happens AFTER 3D initialization
   useEffect(() => {
     renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, currentSlice, currentView, windowLevel, windowWidth, flipH, flipV, measurements, annotations, mode, zoomLevel, panOffset, hoveredAnnotation, cursorPosition, dynamicWindows]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
 
   // Cleanup viewer windows on unmount
   useEffect(() => {
@@ -1044,25 +1125,42 @@ const DicomViewer: React.FC = () => {
     };
   }, [mode, measurements, annotations, hoveredAnnotation]);
 
-  // Interaction mode handlers (scroll, zoom, pan)
+  // Interaction mode handlers (scroll, zoom, pan) - now affects only selected window
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper || !hasImage) return;
+
+    const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!selectedWindow) return;
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
       if (interactionMode === 'scroll') {
-        // Scroll through slices
-        if (e.deltaY < 0 && currentSlice > 0) {
-          setCurrentSlice(s => s - 1);
-        } else if (e.deltaY > 0 && currentSlice < maxSlices) {
-          setCurrentSlice(s => s + 1);
-        }
+        // Scroll through slices in selected window only - use functional update
+        setDynamicWindows(prev => prev.map(w => {
+          if (w.id !== selectedWindowId) return w;
+          
+          const view = w.view;
+          let maxSlice = 0;
+          if (view === 'axial') maxSlice = dimensions[2] - 1;
+          else if (view === 'coronal') maxSlice = dimensions[1] - 1;
+          else if (view === 'sagittal') maxSlice = dimensions[0] - 1;
+
+          const newSlice = e.deltaY < 0 
+            ? Math.max(0, w.slice - 1)
+            : Math.min(maxSlice, w.slice + 1);
+          
+          return { ...w, slice: newSlice };
+        }));
       } else if (interactionMode === 'zoom') {
-        // Zoom in/out
+        // Zoom in/out in selected window only - use functional update
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        setZoomLevel(z => Math.max(0.5, Math.min(5, z + delta)));
+        setDynamicWindows(prev => prev.map(w =>
+          w.id === selectedWindowId
+            ? { ...w, zoomLevel: Math.max(0.5, Math.min(5, w.zoomLevel + delta)) }
+            : w
+        ));
       }
     };
 
@@ -1078,19 +1176,37 @@ const DicomViewer: React.FC = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isPanning.current) {
+        const dx = e.clientX - lastPanPos.current.x;
+        const dy = e.clientY - lastPanPos.current.y;
+        lastPanPos.current = { x: e.clientX, y: e.clientY };
+        
         if (interactionMode === 'pan') {
-          const dx = e.clientX - lastPanPos.current.x;
-          const dy = e.clientY - lastPanPos.current.y;
-          setPanOffset(offset => ({ x: offset.x + dx, y: offset.y + dy }));
-          lastPanPos.current = { x: e.clientX, y: e.clientY };
+          // Pan in selected window only - use functional update to get current state
+          setDynamicWindows(prev => prev.map(w => 
+            w.id === selectedWindowId 
+              ? { 
+                  ...w, 
+                  panOffset: { 
+                    x: w.panOffset.x + dx, 
+                    y: w.panOffset.y + dy 
+                  } 
+                }
+              : w
+          ));
         } else if (interactionMode === 'brightness') {
-          const dy = e.clientY - lastPanPos.current.y;
-          setWindowLevel(level => Math.max(-1000, Math.min(1000, level - dy * 2)));
-          lastPanPos.current = { x: e.clientX, y: e.clientY };
+          // Adjust brightness in selected window only - use functional update
+          setDynamicWindows(prev => prev.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, windowLevel: Math.max(-1000, Math.min(1000, w.windowLevel - dy * 2)) }
+              : w
+          ));
         } else if (interactionMode === 'contrast') {
-          const dy = e.clientY - lastPanPos.current.y;
-          setWindowWidth(width => Math.max(100, Math.min(2000, width - dy * 2)));
-          lastPanPos.current = { x: e.clientX, y: e.clientY };
+          // Adjust contrast in selected window only - use functional update
+          setDynamicWindows(prev => prev.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, windowWidth: Math.max(100, Math.min(2000, w.windowWidth - dy * 2)) }
+              : w
+          ));
         }
       }
     };
@@ -1118,28 +1234,35 @@ const DicomViewer: React.FC = () => {
       wrapper.removeEventListener('mouseup', handleMouseUp);
       wrapper.removeEventListener('mouseleave', handleMouseUp);
     };
-  }, [interactionMode, hasImage, currentSlice, maxSlices]);
-
-  const switchView = (view: 'axial'|'coronal'|'sagittal') => {
-    setCurrentView(view);
-    if (view === 'axial') setMaxSlices(dimensions[2] - 1);
-    else if (view === 'coronal') setMaxSlices(dimensions[1] - 1);
-    else setMaxSlices(dimensions[0] - 1);
-    setCurrentSlice(Math.floor((view === 'axial' ? dimensions[2] : view === 'coronal' ? dimensions[1] : dimensions[0]) / 2));
-  };
+  }, [interactionMode, hasImage, selectedWindowId, dynamicWindows, dimensions]);
 
   const resetView = () => {
+    // Reset global UI states
     setFlipH(false);
     setFlipV(false);
     setMeasurements([]);
     setAnnotations([]);
     setMode('none');
-    setZoomLevel(1);
-    setPanOffset({ x: 0, y: 0 });
     setInteractionMode(null);
-    setWindowLevel(224);
-    setWindowWidth(600);
     setHoveredAnnotation(null);
+    
+    // Reset the selected window's state
+    const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (selectedWindow) {
+      const view = selectedWindow.view;
+      let defaultSlice = 0;
+      if (view === 'axial') defaultSlice = Math.floor(dimensions[2] / 2);
+      else if (view === 'coronal') defaultSlice = Math.floor(dimensions[1] / 2);
+      else if (view === 'sagittal') defaultSlice = Math.floor(dimensions[0] / 2);
+      
+      updateWindowState(selectedWindowId, {
+        slice: defaultSlice,
+        zoomLevel: 1,
+        panOffset: { x: 0, y: 0 },
+        windowLevel: 200,
+        windowWidth: 600
+      });
+    }
   };
 
   // Handle annotation modal
@@ -1341,7 +1464,21 @@ const DicomViewer: React.FC = () => {
       <div className="viewer-main">
         <div className="viewer-header">
           <div>Series: Axial Series 1 of 1</div>
-          <div>Image: {hasImage ? `${currentSlice + 1} of ${maxSlices + 1}` : '—'}</div>
+          <div>
+            {hasImage ? (() => {
+              const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+              if (!selectedWindow) return '—';
+              
+              // Calculate max slices based on selected window's view
+              let maxSliceForView = 0;
+              if (selectedWindow.view === 'axial') maxSliceForView = dimensions[2] - 1;
+              else if (selectedWindow.view === 'coronal') maxSliceForView = dimensions[1] - 1;
+              else if (selectedWindow.view === 'sagittal') maxSliceForView = dimensions[0] - 1;
+              else return '—'; // 3D view has no slices
+              
+              return `Image: ${selectedWindow.slice + 1} of ${maxSliceForView + 1}`;
+            })() : 'Image: —'}
+          </div>
         </div>
 
         <div className="viewer-screen" ref={wrapperRef} style={{ position: 'relative' }}>
@@ -1364,8 +1501,17 @@ const DicomViewer: React.FC = () => {
               <div 
                 key={window.id} 
                 className="viewer-cell"
+                onClick={() => setSelectedWindowId(window.id)}
                 style={{
                   gridColumn: dynamicWindows.length === 3 && idx === 0 ? 'span 2' : 'auto',
+                  border: selectedWindowId === window.id 
+                    ? '3px solid rgba(59, 130, 246, 0.8)' 
+                    : '1px solid #2a2f3d',
+                  boxShadow: selectedWindowId === window.id
+                    ? '0 0 20px rgba(59, 130, 246, 0.5)'
+                    : 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
                 }}
               >
                 {/* Window controls */}
@@ -1562,127 +1708,16 @@ const DicomViewer: React.FC = () => {
               </button>
             {expandedSections.view && (
               <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Views Section */}
-                <div>
-                  <div style={{
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    marginBottom: '12px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}>
-                    Views
-                  </div>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr',
-                    gap: '8px'
-                  }}>
-                    <button
-                      className={`sidebar-btn ${currentView === 'axial' ? 'active' : ''}`}
-                      onClick={() => switchView('axial')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Axial
-                    </button>
-                    <button
-                      className={`sidebar-btn ${currentView === 'coronal' ? 'active' : ''}`}
-                      onClick={() => switchView('coronal')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Coronal
-                    </button>
-                    <button
-                      className={`sidebar-btn ${currentView === 'sagittal' ? 'active' : ''}`}
-                      onClick={() => switchView('sagittal')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Sagittal
-                    </button>
-                  </div>
-                </div>
+                {/* Views Section - Removed individual view buttons since we have dropdowns on each window */}
 
                 {/* Interaction Mode Icons */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '8px 0' }}>
                   {/* First Row: Scroll, Zoom, Pan */}
                   <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
-                    {/* Scroll/Stack Icon with slice counter */}
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
-                      {/* Tiny Slice Counter with +/- buttons */}
-                      {hasImage && (
-                        <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          height: '14px',
-                          marginBottom: '2px',
-                        }}>
-                          <button
-                            onClick={() => setCurrentSlice(Math.max(0, currentSlice - 1))}
-                            disabled={currentSlice === 0}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: currentSlice === 0 ? '#555' : '#94a3b8',
-                              cursor: currentSlice === 0 ? 'not-allowed' : 'pointer',
-                              fontSize: '10px',
-                              padding: '0',
-                              transition: 'color 0.2s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              if (currentSlice !== 0) e.currentTarget.style.color = '#3b82f6';
-                            }}
-                            onMouseLeave={(e) => {
-                              if (currentSlice !== 0) e.currentTarget.style.color = '#94a3b8';
-                            }}
-                          >
-                            −
-                          </button>
-                          <span style={{
-                            fontSize: '10px',
-                            color: '#94a3b8',
-                          }}>
-                            {currentSlice + 1}/{maxSlices + 1}
-                          </span>
-                          <button
-                            onClick={() => setCurrentSlice(Math.min(maxSlices, currentSlice + 1))}
-                            disabled={currentSlice === maxSlices}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: currentSlice === maxSlices ? '#555' : '#94a3b8',
-                              cursor: currentSlice === maxSlices ? 'not-allowed' : 'pointer',
-                              fontSize: '10px',
-                              padding: '0',
-                              transition: 'color 0.2s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              if (currentSlice !== maxSlices) e.currentTarget.style.color = '#3b82f6';
-                            }}
-                            onMouseLeave={(e) => {
-                              if (currentSlice !== maxSlices) e.currentTarget.style.color = '#94a3b8';
-                            }}
-                          >
-                            +
-                          </button>
-                        </div>
-                      )}
-                      {!hasImage && <div style={{ height: '14px', marginBottom: '2px' }} />}
-
-              <button
+                    {/* Scroll/Stack Icon */}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <div style={{ height: '14px', marginBottom: '2px' }} />
+                      <button
                         onClick={() => activateInteractionMode(interactionMode === 'scroll' ? null : 'scroll')}
                         title="Scroll through slices"
                         style={{
@@ -1707,7 +1742,7 @@ const DicomViewer: React.FC = () => {
                           <polyline points="15 11 12 14 9 11"/>
                         </svg>
                         <span style={{ fontSize: '9px', color: interactionMode === 'scroll' ? '#3b82f6' : '#94a3b8', fontWeight: 500 }}>Scroll</span>
-              </button>
+                      </button>
                     </div>
 
                     {/* Zoom/Magnify Icon */}
@@ -2053,8 +2088,24 @@ const DicomViewer: React.FC = () => {
                     + Add Window ({dynamicWindows.length}/4)
                   </button>
 
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '12px', marginBottom: '4px' }}>
                     Active windows: {dynamicWindows.length}
+                  </div>
+                  
+                  <div style={{ 
+                    fontSize: '12px', 
+                    color: '#3b82f6', 
+                    marginTop: '4px',
+                    padding: '8px',
+                    background: 'rgba(59, 130, 246, 0.1)',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(59, 130, 246, 0.3)'
+                  }}>
+                    Selected: Window {selectedWindowId}
+                    {dynamicWindows.find(w => w.id === selectedWindowId) && 
+                      ` (${dynamicWindows.find(w => w.id === selectedWindowId)!.view.charAt(0).toUpperCase() + 
+                        dynamicWindows.find(w => w.id === selectedWindowId)!.view.slice(1)})`
+                    }
                   </div>
                 </div>
               </div>
