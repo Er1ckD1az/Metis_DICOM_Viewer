@@ -4,6 +4,32 @@ import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
 import { Niivue } from "@niivue/niivue";
 
+const API_BASE_URL = 'http://localhost:8000'; // Backend URL
+
+const uploadNiftiFile = async (file: File): Promise<{ 
+  mri_id: number; 
+  file_path: string; 
+  message: string 
+}> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE_URL}/mri`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Upload failed:', response.status, errorText);
+    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+  console.log('✅ Upload successful:', result);
+  return result;
+};
+
 const DicomViewer: React.FC = () => {
   const location = useLocation();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -739,7 +765,7 @@ const DicomViewer: React.FC = () => {
       const blob = new Blob([arrayBuffer]);
       const file = new File([blob], 'BraTS20_Validation_001_flair.nii', { type: 'application/octet-stream' });
       await loadNiftiFile(file);
-      console.log("Demo file loaded successfully");
+      console.log("🟢 Demo file loaded successfully");
     } catch (error) {
       console.error("Failed to load demo file:", error);
       alert("Demo file not found. Please make sure BraTS20_Validation_001_flair.nii is in the public folder.");
