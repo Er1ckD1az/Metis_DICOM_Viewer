@@ -472,7 +472,7 @@ async def detect_modality(mri_id: int):
     )
 
 @app.post("/mri/{mri_id}/segment", response_model=SegmentationResponse)
-async def segment_mri(mri_id: int):
+async def segment_mri(mri_id: int, model_type: str = "pspnet"):
 
     #Run segmentation on the MRI
     #This is called after detection, when user wants to predict
@@ -566,10 +566,21 @@ async def segment_mri(mri_id: int):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error loading volumes: {str(e)}")
 
-        # Run segmentation
-        print(f"\n🧠 Running segmentation for MRI ID: {mri_id}")
+        # Load the appropriate model based on model_type
+        print(f"\n🧠 Running segmentation for MRI ID: {mri_id} using {model_type.upper()} model")
+        
+        # Determine model path
+        if model_type.lower() == "unet":
+            model_path = os.getenv('UNET_MODEL_PATH', 's3://dicom-mri-files/ModelPaths/unet_axial_best.pth')
+        else:  # default to pspnet
+            model_path = os.getenv('MODEL_CHECKPOINT_PATH', 's3://dicom-mri-files/ModelPaths/axial_model_best.pth')
+        
+        print(f"Loading model from: {model_path}")
+        
         try:
-            prediction = segmentation_model.predict_volume(volume_dict)
+            # Load the selected model with the appropriate architecture
+            selected_model = BraTSSegmentationModel(model_path, model_type=model_type)
+            prediction = selected_model.predict_volume(volume_dict)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
 

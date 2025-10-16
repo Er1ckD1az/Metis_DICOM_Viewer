@@ -6,6 +6,7 @@ import segmentation_models_pytorch as smp
 from tqdm import tqdm
 import tempfile
 import re
+from unet_model import ImprovedUNet
 
 try:
     import boto3
@@ -18,11 +19,12 @@ except ImportError:
 
 class BraTSSegmentationModel:
     #Single-model brain tumor segmentation for BraTS MRI data
-    def __init__(self, model_checkpoint_path, device=None):
+    def __init__(self, model_checkpoint_path, device=None, model_type='pspnet'):
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._temp_files = []
+        self.model_type = model_type.lower()
 
-        print(f"Loading segmentation model on {self.device}...")
+        print(f"Loading {self.model_type.upper()} segmentation model on {self.device}...")
         try:
             self.model = self._load_model(model_checkpoint_path)
             print(f"Model loaded successfully")
@@ -88,7 +90,7 @@ class BraTSSegmentationModel:
                 raise RuntimeError(f"S3 error ({error_code}): {e}")
 
     def _load_model(self, checkpoint_path):
-        #Load PSPNet model from checkpoint
+        #Load model from checkpoint (PSPNet or U-Net)
         if self._is_s3_path(checkpoint_path):
             checkpoint_path = self._download_from_s3(checkpoint_path)
 
@@ -96,13 +98,17 @@ class BraTSSegmentationModel:
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        model = smp.PSPNet(
-            encoder_name="resnet50",
-            encoder_weights=None,
-            in_channels=4,
-            classes=4,
-            activation=None
-        )
+        # Create model based on type
+        if self.model_type == 'unet':
+            model = ImprovedUNet(in_channels=4, num_classes=4)
+        else:  # default to pspnet
+            model = smp.PSPNet(
+                encoder_name="resnet50",
+                encoder_weights=None,
+                in_channels=4,
+                classes=4,
+                activation=None
+            )
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         model.load_state_dict(checkpoint["model_state_dict"])

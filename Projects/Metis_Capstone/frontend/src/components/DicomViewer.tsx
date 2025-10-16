@@ -70,6 +70,13 @@ const DicomViewer: React.FC = () => {
     windowWidth: number;
     zoomLevel: number;
     panOffset: { x: number; y: number };
+    // Per-window prediction state
+    mriId: number | null;
+    selectedModel: 'pspnet' | 'unet';
+    segmentationData: Float32Array | null;
+    segmentationDimensions: [number, number, number];
+    showOverlay: boolean;
+    isPredicting: boolean;
   };
   
   const [dynamicWindows, setDynamicWindows] = useState<WindowState[]>([
@@ -80,7 +87,13 @@ const DicomViewer: React.FC = () => {
       windowLevel: 200,
       windowWidth: 600,
       zoomLevel: 1,
-      panOffset: { x: 0, y: 0 }
+      panOffset: { x: 0, y: 0 },
+      mriId: null,
+      selectedModel: 'pspnet',
+      segmentationData: null,
+      segmentationDimensions: [0, 0, 0],
+      showOverlay: false,
+      isPredicting: false
     }
   ]);
   const [selectedWindowId, setSelectedWindowId] = useState<number>(1); // Track selected window
@@ -161,7 +174,13 @@ const DicomViewer: React.FC = () => {
       windowLevel: 200,
       windowWidth: 600,
       zoomLevel: 1,
-      panOffset: { x: 0, y: 0 }
+      panOffset: { x: 0, y: 0 },
+      mriId: mriId, // Inherit the global mriId if available
+      selectedModel: 'pspnet',
+      segmentationData: null,
+      segmentationDimensions: [0, 0, 0],
+      showOverlay: false,
+      isPredicting: false
     };
     setDynamicWindows(prev => [...prev, newWindow]);
   };
@@ -213,7 +232,7 @@ const DicomViewer: React.FC = () => {
   };
 
   // Load and display NIfTI file (same logic as original)
-  const loadNiftiFile = async (file: File) => {
+  const loadNiftiFile = async (file: File, skipBackendUpload = false) => {
     try {
       console.log("🟢 loadNiftiFile called with:", file.name);
       setCurrentFile(file); // Save file for 3D rendering
@@ -284,13 +303,23 @@ const DicomViewer: React.FC = () => {
         hasImage: true
       });
 
-      try {
-      console.log("Uploading file to backend...");
-      const uploadResult = await uploadNiftiFile(file);
-      console.log("🟢 File uploaded to backend:", uploadResult);
-      setMriId(uploadResult.mri_id);
-      } catch (uploadError) {
-        console.error("❌ Failed to upload file to backend:", uploadError);
+      // Only upload to backend if not skipped (e.g., for demo files that already exist in S3)
+      if (!skipBackendUpload) {
+        try {
+          console.log("Uploading file to backend...");
+          const uploadResult = await uploadNiftiFile(file);
+          console.log("🟢 File uploaded to backend:", uploadResult);
+          setMriId(uploadResult.mri_id);
+          // Update all windows with the new mriId
+          setDynamicWindows(prev => prev.map(window => ({
+            ...window,
+            mriId: uploadResult.mri_id
+          })));
+        } catch (uploadError) {
+          console.error("❌ Failed to upload file to backend:", uploadError);
+        }
+      } else {
+        console.log("⏩ Skipping backend upload (file already in S3)");
       }
 
     } catch (error) {
@@ -515,6 +544,112 @@ const DicomViewer: React.FC = () => {
     }
   };
 
+  // Per-window prediction function
+  const runWindowPrediction = async (windowId: number) => {
+    const window = dynamicWindows.find(w => w.id === windowId);
+    if (!window || !window.mriId) {
+      alert("No MRI loaded for this window.");
+      return;
+    }
+
+    // Set window to predicting state
+    updateWindowState(windowId, { isPredicting: true });
+
+    try {
+      console.log(`🟢 Running prediction for window ${windowId} with ${window.selectedModel.toUpperCase()} model`);
+      
+      // Step 1: Detect modality
+      console.log('Step 1: Detecting modality...');
+      await detectModality(window.mriId);
+
+      // Step 2: Run segmentation
+      console.log(`Step 2: Running segmentation with ${window.selectedModel} model...`);
+      const segResult = await runSegmentation(window.mriId, window.selectedModel);
+      
+      console.log('Segmentation result:', segResult);
+
+      // Step 3: Download and load the mask for this window
+      console.log('Step 3: Downloading segmentation mask...');
+      const maskData = await downloadSegmentationMaskForWindow(window.mriId);
+
+      // Update window with segmentation data
+      updateWindowState(windowId, {
+        segmentationData: maskData.data,
+        segmentationDimensions: maskData.dimensions,
+        isPredicting: false
+      });
+
+      console.log(`✅ Prediction complete for window ${windowId} using ${window.selectedModel.toUpperCase()}`);
+      
+      // Show success modal with summary
+      setSegmentationSummary(segResult.summary);
+      setShowSuccessModal(true);
+
+    } catch (error: any) {
+      console.error(`❌ Prediction failed for window ${windowId}:`, error);
+      alert(`Prediction failed: ${error.message}`);
+      updateWindowState(windowId, { isPredicting: false });
+    }
+  };
+
+  // Download segmentation mask for a specific window (doesn't update global state)
+  const downloadSegmentationMaskForWindow = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
+
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation mask');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+
+      const header = nifti.readHeader(arrayBuffer);
+      const dims = [header.dims[1], header.dims[2], header.dims[3]];
+      console.log("🟢 Segmentation dimensions:", dims);
+
+      const dataBuffer = nifti.readImage(header, arrayBuffer);
+
+      let data;
+      const datatype = (header as any).datatype || 4;
+      if (datatype === 4) {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      } else if (datatype === 8) {
+        const int32Data = new Int32Array(dataBuffer);
+        data = new Float32Array(int32Data);
+      } else if (datatype === 16) {
+        data = new Float32Array(dataBuffer);
+      } else {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      }
+
+      // Apply same rotation as original image
+      const [x, y, z] = dims;
+      const rotated = new Float32Array(data.length);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          for (let i = 0; i < x; i++) {
+            const originalIndex = i + j * x + k * x * y;
+            const newI = j;
+            const newJ = x - 1 - i;
+            const newK = k;
+            const flippedJ = y - 1 - newJ;
+            const newIndex = newI + flippedJ * y + newK * y * x;
+            rotated[newIndex] = data[originalIndex];
+          }
+        }
+      }
+
+      console.log('🟢 Segmentation mask loaded successfully');
+      
+      return { data: rotated, dimensions: [y, x, z] as [number, number, number] };
+    } catch (error) {
+      console.error('❌ Failed to load segmentation mask:', error);
+      throw error;
+    }
+  };
+
   // Render a single view to a specific canvas with per-window settings
   const renderViewToCanvas = (
     canvas: HTMLCanvasElement,
@@ -523,7 +658,11 @@ const DicomViewer: React.FC = () => {
     winLevel: number,
     winWidth: number,
     zoom: number,
-    pan: { x: number; y: number }
+    pan: { x: number; y: number },
+    // Per-window overlay data
+    windowShowOverlay: boolean = false,
+    windowSegmentationData: Float32Array | null = null,
+    windowSegmentationDimensions: [number, number, number] = [0, 0, 0]
   ) => {
     if (!niftiData) return;
 
@@ -664,11 +803,11 @@ const DicomViewer: React.FC = () => {
       ctx.drawImage(tempCanvas, offsetX, offsetY, displayWidth, displayHeight);
     }
 
-    if (showOverlay && predictionMask && predictionDimensions[0] > 0) {
+    if (windowShowOverlay && windowSegmentationData && windowSegmentationDimensions[0] > 0) {
     try {
       const { slice: maskSlice, width: maskWidth, height: maskHeight } = getOverlaySlice(
-        predictionMask,
-        predictionDimensions,
+        windowSegmentationData,
+        windowSegmentationDimensions,
         sliceIndex,
         view
       );
@@ -868,7 +1007,11 @@ const DicomViewer: React.FC = () => {
         window.windowLevel, 
         window.windowWidth,
         window.zoomLevel,
-        window.panOffset
+        window.panOffset,
+        // Pass window-specific overlay data
+        window.showOverlay,
+        window.segmentationData,
+        window.segmentationDimensions
       );
       
       // Draw measurements and annotations on the overlay for this specific window
@@ -978,7 +1121,7 @@ const DicomViewer: React.FC = () => {
   useEffect(() => {
     renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows, showOverlay, predictionMask]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
 
   // Cleanup viewer windows on unmount
   useEffect(() => {
@@ -1066,9 +1209,35 @@ const DicomViewer: React.FC = () => {
           );
           
           if (existingFlair) {
-            console.log("🟢 Demo files already exist in backend, using existing MRI ID:", existingFlair.id);
+            console.log("🟢 Demo files already exist in backend (S3), loading directly from backend...");
             uploadedMriId = existingFlair.id;
             setMriId(existingFlair.id);
+            
+            // Update all windows with the mriId
+            setDynamicWindows(prev => prev.map(window => ({
+              ...window,
+              mriId: existingFlair.id
+            })));
+            
+            // Fetch the flair file directly from backend (which gets it from S3)
+            console.log(`Fetching flair file from backend (MRI ID: ${existingFlair.id})...`);
+            const dataResponse = await fetch(`${API_BASE_URL}/mri/${existingFlair.id}/data`);
+            
+            if (!dataResponse.ok) {
+              throw new Error(`Failed to fetch flair file from backend: ${dataResponse.statusText}`);
+            }
+            
+            const flairArrayBuffer = await dataResponse.arrayBuffer();
+            const flairBlob = new Blob([flairArrayBuffer]);
+            const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
+            
+            // Skip backend upload since file is already in S3!
+            await loadNiftiFile(flairFile, true);
+            
+            console.log("✅ Demo file loaded successfully from backend (S3) - FAST!");
+            console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
+            return; // Exit early, we're done!
+            
           } else {
             // Files don't exist, need to upload them
             console.log("Demo files not found in backend, uploading...");
@@ -1111,24 +1280,26 @@ const DicomViewer: React.FC = () => {
         backendAvailable = false;
       }
       
-      // Load the flair file for display (works with or without backend)
-      console.log("Loading flair file for display...");
-      const flairResponse = await fetch(`/${patientId}_flair.nii`);
-      if (!flairResponse.ok) {
-        throw new Error(`Demo file not found: ${patientId}_flair.nii. Please add the file to the public folder.`);
-      }
-      
-      const flairArrayBuffer = await flairResponse.arrayBuffer();
-      const flairBlob = new Blob([flairArrayBuffer]);
-      const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
-      
-      await loadNiftiFile(flairFile);
-      
-      if (backendAvailable) {
-        console.log("🟢 Demo files loaded successfully with backend support");
-        console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
-      } else {
-        console.log("🟢 Demo files loaded successfully (backend unavailable - prediction features disabled)");
+      // Load the flair file for display (only if we didn't already load from backend)
+      if (!uploadedMriId || !backendAvailable) {
+        console.log("Loading flair file from public folder...");
+        const flairResponse = await fetch(`/${patientId}_flair.nii`);
+        if (!flairResponse.ok) {
+          throw new Error(`Demo file not found: ${patientId}_flair.nii. Please add the file to the public folder.`);
+        }
+        
+        const flairArrayBuffer = await flairResponse.arrayBuffer();
+        const flairBlob = new Blob([flairArrayBuffer]);
+        const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
+        
+        await loadNiftiFile(flairFile);
+        
+        if (backendAvailable) {
+          console.log("🟢 Demo files loaded successfully with backend support");
+          console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
+        } else {
+          console.log("🟢 Demo files loaded successfully (backend unavailable - prediction features disabled)");
+        }
       }
     } catch (error) {
       console.error("Failed to load demo files:", error);
@@ -2338,6 +2509,109 @@ const DicomViewer: React.FC = () => {
                     <option value="sagittal">Sagittal</option>
                     <option value="3d">3D Render</option>
                   </select>
+
+                  {/* Prediction controls - center area */}
+                  {window.mriId && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {/* Model selector */}
+                      <select
+                        value={window.selectedModel}
+                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' })}
+                        disabled={window.isPredicting}
+                        style={{
+                          background: 'rgba(30, 41, 59, 0.9)',
+                          backdropFilter: 'blur(8px)',
+                          WebkitBackdropFilter: 'blur(8px)',
+                          color: '#e2e8f0',
+                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          borderRadius: 6,
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
+                          outline: 'none',
+                          opacity: window.isPredicting ? 0.5 : 1,
+                        }}
+                      >
+                        <option value="pspnet">PSPNet</option>
+                        <option value="unet">U-Net</option>
+                      </select>
+
+                      {/* Run Prediction button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          runWindowPrediction(window.id);
+                        }}
+                        disabled={window.isPredicting}
+                        style={{
+                          background: window.isPredicting 
+                            ? 'rgba(107, 114, 128, 0.2)' 
+                            : 'rgba(139, 92, 246, 0.2)',
+                          backdropFilter: 'blur(8px)',
+                          WebkitBackdropFilter: 'blur(8px)',
+                          border: window.isPredicting 
+                            ? '1px solid rgba(107, 114, 128, 0.4)' 
+                            : '1px solid rgba(139, 92, 246, 0.4)',
+                          borderRadius: 6,
+                          color: window.isPredicting ? '#9ca3af' : '#c4b5fd',
+                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
+                          padding: '4px 12px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          transition: 'all 0.2s ease',
+                        }}
+                      >
+                        {window.isPredicting ? (
+                          <>
+                            <span className="spinner" style={{
+                              width: 12,
+                              height: 12,
+                              border: '2px solid rgba(156, 163, 175, 0.3)',
+                              borderTop: '2px solid #9ca3af',
+                              borderRadius: '50%',
+                              animation: 'spin 1s linear infinite',
+                            }} />
+                            Running...
+                          </>
+                        ) : (
+                          '▶ Predict'
+                        )}
+                      </button>
+
+                      {/* Show Overlay toggle */}
+                      {window.segmentationData && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateWindowState(window.id, { showOverlay: !window.showOverlay });
+                          }}
+                          style={{
+                            background: window.showOverlay 
+                              ? 'rgba(34, 197, 94, 0.2)' 
+                              : 'rgba(148, 163, 184, 0.2)',
+                            backdropFilter: 'blur(8px)',
+                            WebkitBackdropFilter: 'blur(8px)',
+                            border: window.showOverlay 
+                              ? '1px solid rgba(34, 197, 94, 0.4)' 
+                              : '1px solid rgba(148, 163, 184, 0.4)',
+                            borderRadius: 6,
+                            color: window.showOverlay ? '#86efac' : '#cbd5e1',
+                            cursor: 'pointer',
+                            padding: '4px 12px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            transition: 'all 0.2s ease',
+                          }}
+                        >
+                          {window.showOverlay ? '👁️ Hide' : '👁️ Show'}
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {/* Delete button */}
                   {dynamicWindows.length > 1 && (

@@ -193,3 +193,13 @@
   pointer-events: none;
   z-index: 6;
 }
+
+/* Spinner animation for prediction button */
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
