@@ -134,23 +134,29 @@ class BraTSSegmentationModel:
 
         return pred
 
-    def predict_volume(self, volume_data):
+    def predict_volume(self, volume_data):       
         #Predict segmentation for entire 3D volume
         volume_shape = volume_data.shape
-        predictions = np.zeros(volume_shape, dtype=np.uint8)
+        predictions = np.zeros(volume_shape[:3], dtype=np.uint8)
 
         print(f"Predicting segmentation for volume shape: {volume_shape}")
         print("Note: Using single modality data for all 4 input channels")
 
         # Process axial slices (z-dimension)
         for z in tqdm(range(volume_shape[2]), desc="Processing slices"):
-            # Normalize the slice
-            slice_normalized = self._normalize_slice(volume_data[:, :, z])
+            # Get slice with all 4 modalities: shape (H, W, 4)
+            slice_4d = volume_data[:, :, z, :]
+            
+            # Normalize each modality channel independently
+            normalized_slice = np.zeros_like(slice_4d)
+            for ch in range(4):
+                channel_data = slice_4d[:, :, ch]
+                mean_val = np.mean(channel_data)
+                std_val = np.std(channel_data)
+                normalized_slice[:, :, ch] = (channel_data - mean_val) / (std_val + 1e-6)
+                normalized_slice[:, :, ch] = np.nan_to_num(normalized_slice[:, :, ch])
 
-            # Duplicate the same slice for all 4 modality channels
-            multi_modal = np.stack([slice_normalized] * 4, axis=-1)
-
-            predictions[:, :, z] = self._predict_slice(multi_modal)
+            predictions[:, :, z] = self._predict_slice(normalized_slice)
 
         print("\nPrediction complete!")
         self._print_prediction_summary(predictions)
@@ -247,6 +253,9 @@ def load_all_modalities(modality_paths):
     
     multi_modal_volume = np.stack(volumes, axis=-1)
     
+    if multi_modal_volume.ndim == 5:
+        multi_modal_volume = multi_modal_volume.squeeze(-1)
+
     print(f"✅ Loaded all modalities: {multi_modal_volume.shape}")
     
     return multi_modal_volume

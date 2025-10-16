@@ -26,7 +26,7 @@ const uploadNiftiFile = async (file: File): Promise<{
   }
 
   const result = await response.json();
-  console.log('Upload successful:', result);
+  console.log('🟢 Upload successful:', result);
   return result;
 };
 
@@ -45,6 +45,13 @@ const DicomViewer: React.FC = () => {
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
   const [dimensions, setDimensions] = useState<[number, number, number]>([0, 0, 0]);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [mriId, setMriId] = useState<number | null>(null);
+
+  const [predictionMask, setPredictionMask] = useState<Float32Array | null>(null);
+  const [predictionDimensions, setPredictionDimensions] = useState<[number, number, number]>([0, 0, 0]);
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [predictionError, setPredictionError] = useState<string | null>(null);
 
   // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
@@ -269,6 +276,16 @@ const DicomViewer: React.FC = () => {
         dataLength: rotated.length,
         hasImage: true
       });
+
+      try {
+      console.log("Uploading file to backend...");
+      const uploadResult = await uploadNiftiFile(file);
+      console.log("🟢 File uploaded to backend:", uploadResult);
+      setMriId(uploadResult.mri_id);
+      } catch (uploadError) {
+        console.error("❌ Failed to upload file to backend:", uploadError);
+      }
+
     } catch (error) {
       console.error("❌ Failed to load NIfTI file:", error);
       alert("Failed to load NIfTI file. Please check the file format.");
@@ -306,6 +323,180 @@ const DicomViewer: React.FC = () => {
         }
       }
       return { slice, width: y, height: z };
+    }
+  };
+
+  const getOverlaySlice = (
+    maskData: Float32Array,
+    dims: [number, number, number],
+    sliceIndex: number,
+    view: string
+  ) => {
+    const [x, y, z] = dims;
+    
+    if (view === 'axial') {
+      const slice = new Float32Array(x * y);
+      for (let j = 0; j < y; j++) {
+        for (let i = 0; i < x; i++) {
+          const dataIndex = i + j * x + sliceIndex * x * y;
+          slice[i + j * x] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: x, height: y };
+    } else if (view === 'coronal') {
+      const slice = new Float32Array(x * z);
+      for (let k = 0; k < z; k++) {
+        for (let i = 0; i < x; i++) {
+          const dataIndex = i + sliceIndex * x + k * x * y;
+          const flippedK = z - 1 - k;
+          slice[i + flippedK * x] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: x, height: z };
+    } else {
+      // sagittal
+      const slice = new Float32Array(y * z);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          const dataIndex = sliceIndex + j * x + k * x * y;
+          const flippedK = z - 1 - k;
+          slice[j + flippedK * y] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: y, height: z };
+    }
+  };
+
+  const detectModality = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/detect`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to detect modality');
+      }
+
+      const result = await response.json();
+      console.log('🟢 Modality detection result:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ Modality detection failed:', error);
+      throw error;
+    }
+  };
+
+  const runSegmentation = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segment`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Segmentation failed');
+      }
+
+      const result = await response.json();
+      console.log('🟢 Segmentation result:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ Segmentation failed:', error);
+      throw error;
+    }
+  };
+
+  const downloadSegmentationMask = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
+
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation mask');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+
+      const header = nifti.readHeader(arrayBuffer);
+      const dims = [header.dims[1], header.dims[2], header.dims[3]];
+      console.log("🟢 Segmentation dimensions:", dims);
+
+      const dataBuffer = nifti.readImage(header, arrayBuffer);
+
+      let data;
+      const datatype = (header as any).datatype || 4;
+      if (datatype === 4) {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      } else if (datatype === 8) {
+        const int32Data = new Int32Array(dataBuffer);
+        data = new Float32Array(int32Data);
+      } else if (datatype === 16) {
+        data = new Float32Array(dataBuffer);
+      } else {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      }
+
+      // Apply same rotation as original image
+      const [x, y, z] = dims;
+      const rotated = new Float32Array(data.length);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          for (let i = 0; i < x; i++) {
+            const originalIndex = i + j * x + k * x * y;
+            const newI = j;
+            const newJ = x - 1 - i;
+            const newK = k;
+            const flippedJ = y - 1 - newJ;
+            const newIndex = newI + flippedJ * y + newK * y * x;
+            rotated[newIndex] = data[originalIndex];
+          }
+        }
+      }
+
+      setPredictionMask(rotated);
+      setPredictionDimensions([y, x, z]);
+      console.log('🟢 Segmentation mask loaded successfully');
+      
+      return rotated;
+    } catch (error) {
+      console.error('❌ Failed to load segmentation mask:', error);
+      throw error;
+    }
+  };
+
+  const handlePrediction = async () => {
+    if (!niftiData || !mriId) {
+      alert("Please load an image first before running prediction.");
+      return;
+    }
+    
+    setIsPredicting(true);
+    setPredictionError(null);
+
+    try {
+      // Step 1: Detect modality
+      console.log('Step 1: Detecting modality...');
+      await detectModality(mriId);
+
+      // Step 2: Run segmentation
+      console.log('Step 2: Running segmentation...');
+      const segResult = await runSegmentation(mriId);
+      
+      console.log('Segmentation summary:', segResult.summary);
+
+      // Step 3: Download and load the mask
+      console.log('Step 3: Downloading segmentation mask...');
+      await downloadSegmentationMask(mriId);
+
+      alert('Prediction completed successfully!');
+
+    } catch (error: any) {
+      console.error('❌ Prediction pipeline failed:', error);
+      setPredictionError(error.message);
+    } finally {
+      setIsPredicting(false);
     }
   };
 
@@ -446,15 +637,95 @@ const DicomViewer: React.FC = () => {
     tempCanvas.width = displayWidth;
     tempCanvas.height = displayHeight;
     const tempCtx = tempCanvas.getContext('2d');
+    
+    // Center the image in the container
+    const offsetX = (containerWidth - displayWidth) / 2;
+    const offsetY = (containerHeight - displayHeight) / 2;
+    
     if (tempCtx) {
       tempCtx.putImageData(imageData, 0, 0);
       
-      // Center the image in the container
-      const offsetX = (containerWidth - displayWidth) / 2;
-      const offsetY = (containerHeight - displayHeight) / 2;
-      
       // Draw the temp canvas onto the main canvas with current transformations
       ctx.drawImage(tempCanvas, offsetX, offsetY, displayWidth, displayHeight);
+    }
+
+    if (showOverlay && predictionMask && predictionDimensions[0] > 0) {
+    try {
+      const { slice: maskSlice, width: maskWidth, height: maskHeight } = getOverlaySlice(
+        predictionMask,
+        predictionDimensions,
+        sliceIndex,
+        view
+      );
+
+      // Create overlay canvas
+      const overlayCanvas = document.createElement('canvas');
+      overlayCanvas.width = displayWidth;
+      overlayCanvas.height = displayHeight;
+      const overlayCtx = overlayCanvas.getContext('2d');
+      
+      if (overlayCtx) {
+        const overlayImageData = overlayCtx.createImageData(displayWidth, displayHeight);
+
+        // Render the overlay with color coding
+        for (let yPix = 0; yPix < displayHeight; yPix++) {
+          for (let xPix = 0; xPix < displayWidth; xPix++) {
+            const srcX = xPix / scale;
+            const srcY = yPix / scale;
+            const x1 = Math.floor(srcX);
+            const y1 = Math.floor(srcY);
+            const x2 = Math.min(x1 + 1, maskWidth - 1);
+            const y2 = Math.min(y1 + 1, maskHeight - 1);
+            const fx = srcX - x1;
+            const fy = srcY - y1;
+
+            const m1 = maskSlice[x1 + y1 * maskWidth] || 0;
+            const m2 = maskSlice[x2 + y1 * maskWidth] || 0;
+            const m3 = maskSlice[x1 + y2 * maskWidth] || 0;
+            const m4 = maskSlice[x2 + y2 * maskWidth] || 0;
+
+            const maskVal =
+              m1 * (1 - fx) * (1 - fy) +
+              m2 * fx * (1 - fy) +
+              m3 * (1 - fx) * fy +
+              m4 * fx * fy;
+
+            const pixelIndex = (yPix * displayWidth + xPix) * 4;
+
+            if (maskVal > 0.5) {
+              const alpha = 0.4;
+              
+              // Color coding: 1=red (necrotic), 2=green (edema), 3=blue (enhancing)
+              let r = 0, g = 0, b = 0;
+              const roundedMaskVal = Math.round(maskVal);
+              
+              if (roundedMaskVal === 1) {
+                r = 255; g = 0; b = 0; // Red for necrotic
+              } else if (roundedMaskVal === 2) {
+                r = 0; g = 255; b = 0; // Green for edema
+              } else if (roundedMaskVal === 3) {
+                r = 0; g = 100; b = 255; // Blue for enhancing
+              }
+
+              overlayImageData.data[pixelIndex] = r;
+              overlayImageData.data[pixelIndex + 1] = g;
+              overlayImageData.data[pixelIndex + 2] = b;
+              overlayImageData.data[pixelIndex + 3] = Math.floor(alpha * 255); // Alpha channel
+            } else {
+              // Transparent where no tumor
+              overlayImageData.data[pixelIndex + 3] = 0;
+            }
+          }
+        }
+
+        overlayCtx.putImageData(overlayImageData, 0, 0);
+        
+        // Draw overlay on main canvas with same offset as the MRI image
+        ctx.drawImage(overlayCanvas, offsetX, offsetY, displayWidth, displayHeight);
+      }
+      } catch (error) {
+        console.error('Error rendering overlay:', error);
+      }
     }
   };
 
@@ -692,7 +963,7 @@ const DicomViewer: React.FC = () => {
   useEffect(() => {
     renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows, showOverlay, predictionMask]);
 
   // Cleanup viewer windows on unmount
   useEffect(() => {
@@ -755,20 +1026,45 @@ const DicomViewer: React.FC = () => {
   // Load demo NIfTI file from public folder
   const loadDemoFile = async () => {
     try {
-      console.log("Loading demo file...");
-      const response = await fetch('/BraTS20_Validation_001_flair.nii');
-      if (!response.ok) {
-        throw new Error('Demo file not found. Please add BraTS20_Validation_001_flair.nii to the public folder.');
+      console.log("Loading demo files...");
+      
+      // Define all 4 modality files
+      const modalities = ['flair', 't1', 't1ce', 't2'];
+      const patientId = 'BraTS20_Validation_001';
+      
+      // Upload all 4 modality files
+      for (const modality of modalities) {
+        const filename = `${patientId}_${modality}.nii`;
+        console.log(`Fetching ${filename}...`);
+        
+        const response = await fetch(`/${filename}`);
+        if (!response.ok) {
+          throw new Error(`Demo file not found: ${filename}. Please add all 4 modality files to the public folder.`);
+        }
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const blob = new Blob([arrayBuffer]);
+        const file = new File([blob], filename, { type: 'application/octet-stream' });
+        
+        // Upload each file to backend
+        console.log(`Uploading ${filename} to backend...`);
+        await uploadNiftiFile(file);
       }
-      console.log("Demo file fetched successfully");
-      const arrayBuffer = await response.arrayBuffer();
-      const blob = new Blob([arrayBuffer]);
-      const file = new File([blob], 'BraTS20_Validation_001_flair.nii', { type: 'application/octet-stream' });
-      await loadNiftiFile(file);
-      console.log("🟢 Demo file loaded successfully");
+      
+      console.log("All 4 modality files uploaded successfully");
+      
+      // Now load the flair file for display
+      console.log("Loading flair file for display...");
+      const flairResponse = await fetch(`/${patientId}_flair.nii`);
+      const flairArrayBuffer = await flairResponse.arrayBuffer();
+      const flairBlob = new Blob([flairArrayBuffer]);
+      const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
+      
+      await loadNiftiFile(flairFile);
+      console.log("🟢 Demo files loaded successfully");
     } catch (error) {
-      console.error("Failed to load demo file:", error);
-      alert("Demo file not found. Please make sure BraTS20_Validation_001_flair.nii is in the public folder.");
+      console.error("Failed to load demo files:", error);
+      alert(`Demo files not found. Please make sure all 4 modality files are in the public folder:\n- BraTS20_Validation_001_flair.nii\n- BraTS20_Validation_001_t1.nii\n- BraTS20_Validation_001_t1ce.nii\n- BraTS20_Validation_001_t2.nii`);
     }
   };
 
@@ -1553,8 +1849,8 @@ const DicomViewer: React.FC = () => {
   };
 
   // State for prediction mask and overlay visibility
-  const [predictionMask, setPredictionMask] = useState<Float32Array | null>(null);
-  const [showOverlay, setShowOverlay] = useState(false);
+  //const [predictionMask, setPredictionMask] = useState<Float32Array | null>(null);
+  //const [showOverlay, setShowOverlay] = useState(false);
 
   return (
     <div className="viewer-container">
@@ -2444,36 +2740,37 @@ const DicomViewer: React.FC = () => {
                 </button>
            {expandedSections.upload && (
   <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-    <input id="niftiUpload" type="file" accept=".nii,.nii.gz" className="upload-box" />
+    <input id="niftiUpload" type="file" accept=".nii,.nii.gz" multiple className="upload-box" />
 
     {/* Predict Button */}
     <button
-      onClick={async () => {
-        if (!niftiData) {
-          alert("Please load an image before running prediction.");
-          return;
-        }
-        console.log("Running model prediction...");
-
-        // Simulate model output for now (replace with your model call)
-        const simulatedMask = new Float32Array(niftiData.length).map(() =>
-          Math.random() > 0.98 ? 1 : 0
-        );
-        setPredictionMask(simulatedMask);
-        alert("Prediction completed!");
-      }}
+      onClick={handlePrediction}
+      disabled={!niftiData || !mriId || isPredicting}
       style={{
-        background: 'rgba(59,130,246,0.6)',
-        border: '1px solid rgba(59,130,246,0.7)',
+        background: isPredicting 
+          ? 'rgba(100, 116, 139, 0.4)' 
+          : 'rgba(59,130,246,0.6)',
+        border: `1px solid ${isPredicting ? 'rgba(100, 116, 139, 0.5)' : 'rgba(59,130,246,0.7)'}`,
         borderRadius: '6px',
         color: '#fff',
-        padding: '10px',
+        padding: '12px',
         fontWeight: 600,
-        cursor: 'pointer',
+        cursor: (!niftiData || !mriId || isPredicting) ? 'not-allowed' : 'pointer',
+        opacity: (!niftiData || !mriId || isPredicting) ? 0.5 : 1,
         transition: 'all 0.2s ease',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
       }}
     >
-      Run Prediction
+      {isPredicting ? (
+        <>
+          Running Prediction...
+        </>
+      ) : (
+        'Run Prediction'
+      )}
     </button>
 
     {/* Overlay Toggle */}

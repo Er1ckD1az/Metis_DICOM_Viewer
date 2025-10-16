@@ -407,10 +407,6 @@ async def delete_mri_by_id(mri_id: int):
 
 @app.post("/mri/{mri_id}/detect", response_model=ModalityDetectionResponse)
 async def detect_modality(mri_id: int):
-
-    #Detect the modality of the uploaded MRI and find sibling files
-    #This is called when user clicks "Detect" button
-
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -434,21 +430,39 @@ async def detect_modality(mri_id: int):
                    f"Expected format: patientID_modality.nii[.gz] where modality is one of: flair, t1, t1ce, t2"
         )
 
-    # Download the file temporarily to find siblings
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir) / file_name
-        file_data = download_from_s3(file_name)
-        temp_path.write_bytes(file_data)
-
-        try:
-            sibling_paths = find_sibling_files(str(temp_path), detected_modality)
-            sibling_files = {mod: Path(path).name for mod, path in sibling_paths.items()}
-        except FileNotFoundError as e:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Missing sibling files: {str(e)}. "
-                       f"Please ensure all 4 modalities (flair, t1, t1ce, t2) are uploaded with consistent naming."
-            )
+    # Extract patient ID from filename
+    patient_id = file_name.rsplit('_', 1)[0]  # e.g., "BraTS20_Validation_001"
+    
+    # Check S3/database for all 4 modality files
+    modalities = ['flair', 't1', 't1ce', 't2']
+    sibling_files = {}
+    missing = []
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            for modality in modalities:
+                # Try both .nii and .nii.gz extensions
+                for ext in ['.nii.gz', '.nii']:
+                    expected_filename = f"{patient_id}_{modality}{ext}"
+                    cursor.execute("SELECT file_name FROM dicom_mri_db WHERE file_name = %s", (expected_filename,))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        sibling_files[modality] = result[0]
+                        break
+                
+                if modality not in sibling_files:
+                    missing.append(f"{patient_id}_{modality}.nii[.gz]")
+    finally:
+        conn.close()
+    
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Missing required modality files: {', '.join(missing)}. "
+                   f"Please ensure all 4 modalities (flair, t1, t1ce, t2) are uploaded with consistent naming."
+        )
 
     return ModalityDetectionResponse(
         mri_id=mri_id,
@@ -497,33 +511,54 @@ async def segment_mri(mri_id: int):
         temp_path = temp_dir_path / file_name
         temp_path.write_bytes(file_data)
 
-        # Find sibling files
+        # Extract patient ID from filename
+        patient_id = file_name.rsplit('_', 1)[0]
+
+        # Find all 4 modality files in database/S3
+        modalities = ['flair', 't1', 't1ce', 't2']
+        s3_filenames = {}
+        missing = []
+
+        conn_check = get_db_connection()
         try:
-            sibling_paths = find_sibling_files(str(temp_path), detected_modality)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            with conn_check.cursor() as cursor:
+                for modality in modalities:
+                    # Try both .nii and .nii.gz extensions
+                    for ext in ['.nii.gz', '.nii']:
+                        expected_filename = f"{patient_id}_{modality}{ext}"
+                        cursor.execute("SELECT file_name FROM dicom_mri_db WHERE file_name = %s", (expected_filename,))
+                        result = cursor.fetchone()
+                        
+                        if result:
+                            s3_filenames[modality] = result[0]
+                            break
+                    
+                    if modality not in s3_filenames:
+                        missing.append(f"{patient_id}_{modality}.nii[.gz]")
+        finally:
+            conn_check.close()
 
-        # Download all sibling files from S3 to temp directory
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Missing required modality files: {', '.join(missing)}. "
+                    f"Please ensure all 4 modalities (flair, t1, t1ce, t2) are uploaded."
+            )
+
+        # Download all modality files from S3 to temp directory
         downloaded_paths = {}
-        for modality, original_path in sibling_paths.items():
-            s3_filename = Path(original_path).name
-
-            # Check if already downloaded (the original uploaded file)
-            if s3_filename == file_name:
-                downloaded_paths[modality] = str(temp_path)
-            else:
-                # Download from S3
-                try:
-                    sibling_data = download_from_s3(s3_filename)
-                    local_path = temp_dir_path / s3_filename
-                    local_path.write_bytes(sibling_data)
-                    downloaded_paths[modality] = str(local_path)
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Could not download {modality} file from S3: {s3_filename}. "
-                               f"Please ensure all 4 modalities are uploaded."
-                    )
+        for modality, s3_filename in s3_filenames.items():
+            try:
+                sibling_data = download_from_s3(s3_filename)
+                local_path = temp_dir_path / s3_filename
+                local_path.write_bytes(sibling_data)
+                downloaded_paths[modality] = str(local_path)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Could not download {modality} file from S3: {s3_filename}. "
+                        f"Error: {str(e)}"
+                )
 
         # Load all volumes into memory
         try:
