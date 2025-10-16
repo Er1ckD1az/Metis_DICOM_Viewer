@@ -40,6 +40,9 @@ const DicomViewer: React.FC = () => {
   
   // NiiVue instances for 3D rendering (one per window)
   const nv3DRefs = useRef<Map<number, any>>(new Map());
+  
+  // Track if demo has been loaded to prevent infinite loop
+  const demoLoadedRef = useRef(false);
 
   const [hasImage, setHasImage] = useState(false);
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
@@ -52,6 +55,10 @@ const DicomViewer: React.FC = () => {
   const [showOverlay, setShowOverlay] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
   const [predictionError, setPredictionError] = useState<string | null>(null);
+  const [predictionProgress, setPredictionProgress] = useState<string>('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
+  const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
 
   // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
@@ -387,9 +394,9 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  const runSegmentation = async (mriId: number) => {
+  const runSegmentation = async (mriId: number, modelType: 'pspnet' | 'unet' = 'pspnet') => {
     try {
-      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segment`, {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segment?model_type=${modelType}`, {
         method: 'POST',
       });
 
@@ -474,29 +481,37 @@ const DicomViewer: React.FC = () => {
     
     setIsPredicting(true);
     setPredictionError(null);
+    setPredictionProgress('Initializing...');
 
     try {
       // Step 1: Detect modality
+      setPredictionProgress('Detecting MRI modality...');
       console.log('Step 1: Detecting modality...');
       await detectModality(mriId);
 
       // Step 2: Run segmentation
-      console.log('Step 2: Running segmentation...');
-      const segResult = await runSegmentation(mriId);
+      setPredictionProgress(`Running ${selectedModel.toUpperCase()} segmentation model... (this may take 15-20 seconds)`);
+      console.log(`Step 2: Running segmentation with ${selectedModel} model...`);
+      const segResult = await runSegmentation(mriId, selectedModel);
       
       console.log('Segmentation summary:', segResult.summary);
+      setSegmentationSummary(segResult.summary);
 
       // Step 3: Download and load the mask
+      setPredictionProgress('Downloading segmentation results...');
       console.log('Step 3: Downloading segmentation mask...');
       await downloadSegmentationMask(mriId);
 
-      alert('Prediction completed successfully!');
+      setPredictionProgress('Complete!');
+      setShowSuccessModal(true);
 
     } catch (error: any) {
       console.error('❌ Prediction pipeline failed:', error);
       setPredictionError(error.message);
+      alert(`Prediction failed: ${error.message}`);
     } finally {
       setIsPredicting(false);
+      setPredictionProgress('');
     }
   };
 
@@ -791,8 +806,8 @@ const DicomViewer: React.FC = () => {
       ctx.lineWidth = baseLineWidth;
       ctx.stroke();
       
-      const dx = m.x2 - m.x1;
-      const dy = m.y2 - m.y1;
+          const dx = m.x2 - m.x1;
+          const dy = m.y2 - m.y1;
       const distance = Math.sqrt(dx * dx + dy * dy);
       ctx.fillStyle = '#00FF00';
       ctx.font = `${baseFontSize}px system-ui`;
@@ -1016,9 +1031,10 @@ const DicomViewer: React.FC = () => {
       }
     }
 
-    // Handle demo mode - load sample file
-    else if (state?.demoMode) {
+    // Handle demo mode - load sample file (only once)
+    else if (state?.demoMode && !demoLoadedRef.current) {
       console.log("Demo mode activated - loading sample file");
+      demoLoadedRef.current = true;
       loadDemoFile();
     }
   }, [location]);
@@ -1032,39 +1048,91 @@ const DicomViewer: React.FC = () => {
       const modalities = ['flair', 't1', 't1ce', 't2'];
       const patientId = 'BraTS20_Validation_001';
       
-      // Upload all 4 modality files
-      for (const modality of modalities) {
-        const filename = `${patientId}_${modality}.nii`;
-        console.log(`Fetching ${filename}...`);
+      // Try to use backend, fallback to direct loading if backend unavailable
+      let backendAvailable = true;
+      let uploadedMriId: number | null = null;
+      
+      try {
+        // First, check if demo files already exist in backend
+        console.log("Checking if demo files already exist in backend...");
+        const checkResponse = await fetch(`${API_BASE_URL}/mri`);
         
-        const response = await fetch(`/${filename}`);
-        if (!response.ok) {
-          throw new Error(`Demo file not found: ${filename}. Please add all 4 modality files to the public folder.`);
+        if (checkResponse.ok) {
+          const existingFiles = await checkResponse.json();
+          
+          // Look for existing flair file for this patient
+          const existingFlair = existingFiles.find((file: any) => 
+            file.file_name === `${patientId}_flair.nii`
+          );
+          
+          if (existingFlair) {
+            console.log("🟢 Demo files already exist in backend, using existing MRI ID:", existingFlair.id);
+            uploadedMriId = existingFlair.id;
+            setMriId(existingFlair.id);
+          } else {
+            // Files don't exist, need to upload them
+            console.log("Demo files not found in backend, uploading...");
+            
+            for (const modality of modalities) {
+              const filename = `${patientId}_${modality}.nii`;
+              console.log(`Fetching ${filename}...`);
+              
+              const response = await fetch(`/${filename}`);
+      if (!response.ok) {
+                throw new Error(`Demo file not found: ${filename}. Please add all 4 modality files to the public folder.`);
+      }
+              
+      const arrayBuffer = await response.arrayBuffer();
+      const blob = new Blob([arrayBuffer]);
+              const file = new File([blob], filename, { type: 'application/octet-stream' });
+              
+              // Upload each file to backend
+              console.log(`Uploading ${filename} to backend...`);
+              const uploadResult = await uploadNiftiFile(file);
+              
+              // Store the first MRI ID (flair) for prediction
+              if (modality === 'flair' && uploadResult.mri_id) {
+                uploadedMriId = uploadResult.mri_id;
+                console.log(`🟢 Stored MRI ID: ${uploadedMriId} for prediction`);
+              }
+            }
+            
+            console.log("All 4 modality files uploaded successfully to backend");
+            
+            // Set the mriId for prediction features
+            if (uploadedMriId) {
+              setMriId(uploadedMriId);
+            }
+          }
         }
         
-        const arrayBuffer = await response.arrayBuffer();
-        const blob = new Blob([arrayBuffer]);
-        const file = new File([blob], filename, { type: 'application/octet-stream' });
-        
-        // Upload each file to backend
-        console.log(`Uploading ${filename} to backend...`);
-        await uploadNiftiFile(file);
+      } catch (backendError) {
+        console.warn("Backend not available, using direct file loading:", backendError);
+        backendAvailable = false;
       }
       
-      console.log("All 4 modality files uploaded successfully");
-      
-      // Now load the flair file for display
+      // Load the flair file for display (works with or without backend)
       console.log("Loading flair file for display...");
       const flairResponse = await fetch(`/${patientId}_flair.nii`);
+      if (!flairResponse.ok) {
+        throw new Error(`Demo file not found: ${patientId}_flair.nii. Please add the file to the public folder.`);
+      }
+      
       const flairArrayBuffer = await flairResponse.arrayBuffer();
       const flairBlob = new Blob([flairArrayBuffer]);
       const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
       
       await loadNiftiFile(flairFile);
-      console.log("🟢 Demo files loaded successfully");
+      
+      if (backendAvailable) {
+        console.log("🟢 Demo files loaded successfully with backend support");
+        console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
+      } else {
+        console.log("🟢 Demo files loaded successfully (backend unavailable - prediction features disabled)");
+      }
     } catch (error) {
       console.error("Failed to load demo files:", error);
-      alert(`Demo files not found. Please make sure all 4 modality files are in the public folder:\n- BraTS20_Validation_001_flair.nii\n- BraTS20_Validation_001_t1.nii\n- BraTS20_Validation_001_t1ce.nii\n- BraTS20_Validation_001_t2.nii`);
+      alert(`Demo files not found. Please make sure the flair file is in the public folder:\n- BraTS20_Validation_001_flair.nii`);
     }
   };
 
@@ -1424,37 +1492,37 @@ const DicomViewer: React.FC = () => {
           const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
           
           // Check if clicking on an annotation (only for selected window)
-          let annotationRemoved = false;
-          annotations.forEach((a, idx) => {
+        let annotationRemoved = false;
+        annotations.forEach((a, idx) => {
             if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
             const dx = transformedX - a.x;
             const dy = transformedY - a.y;
-            const distance = Math.sqrt(dx*dx + dy*dy);
-            if (distance <= 12 && !annotationRemoved) {
-              setAnnotations(prev => prev.filter((_, i) => i !== idx));
-              annotationRemoved = true;
-            }
-          });
+          const distance = Math.sqrt(dx*dx + dy*dy);
+          if (distance <= 12 && !annotationRemoved) {
+            setAnnotations(prev => prev.filter((_, i) => i !== idx));
+            annotationRemoved = true;
+          }
+        });
 
           // Check if clicking on a measurement (only for selected window)
-          if (!annotationRemoved) {
-            measurements.forEach((m, idx) => {
+        if (!annotationRemoved) {
+          measurements.forEach((m, idx) => {
               if (m.windowId !== selectedWindowId) return; // Only check measurements for selected window
-              // Calculate distance from point to line segment
-              const dx = m.x2 - m.x1;
-              const dy = m.y2 - m.y1;
-              const length = Math.sqrt(dx*dx + dy*dy);
-              if (length === 0) return;
+            // Calculate distance from point to line segment
+            const dx = m.x2 - m.x1;
+            const dy = m.y2 - m.y1;
+            const length = Math.sqrt(dx*dx + dy*dy);
+            if (length === 0) return;
 
               const t = Math.max(0, Math.min(1, ((transformedX - m.x1) * dx + (transformedY - m.y1) * dy) / (length * length)));
-              const projX = m.x1 + t * dx;
-              const projY = m.y1 + t * dy;
+            const projX = m.x1 + t * dx;
+            const projY = m.y1 + t * dy;
               const distToLine = Math.sqrt((transformedX - projX)**2 + (transformedY - projY)**2);
 
-              if (distToLine <= 8) {
-                setMeasurements(prev => prev.filter((_, i) => i !== idx));
-              }
-            });
+            if (distToLine <= 8) {
+              setMeasurements(prev => prev.filter((_, i) => i !== idx));
+            }
+          });
           }
         }
       } else if (mode === 'measure' || mode === 'annotate'){
@@ -1505,19 +1573,19 @@ const DicomViewer: React.FC = () => {
           const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
           const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
           
-          let foundHover = false;
-          annotations.forEach((a, idx) => {
+        let foundHover = false;
+        annotations.forEach((a, idx) => {
             if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
             const dx = transformedX - a.x;
             const dy = transformedY - a.y;
-            const distance = Math.sqrt(dx*dx + dy*dy);
-            if (distance <= 8) {
-              setHoveredAnnotation(idx);
-              foundHover = true;
-            }
-          });
-          if (!foundHover && hoveredAnnotation !== null) {
-            setHoveredAnnotation(null);
+          const distance = Math.sqrt(dx*dx + dy*dy);
+          if (distance <= 8) {
+            setHoveredAnnotation(idx);
+            foundHover = true;
+          }
+        });
+        if (!foundHover && hoveredAnnotation !== null) {
+          setHoveredAnnotation(null);
           }
         }
       }
@@ -1854,6 +1922,147 @@ const DicomViewer: React.FC = () => {
 
   return (
     <div className="viewer-container">
+      {/* Success Modal for Prediction */}
+      {showSuccessModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1001,
+          }}
+          onClick={() => setShowSuccessModal(false)}
+        >
+          <div
+            style={{
+              background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.98) 0%, rgba(15, 23, 42, 0.98) 100%)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              borderRadius: '16px',
+              padding: '32px',
+              minWidth: '500px',
+              maxWidth: '600px',
+              boxShadow: '0 20px 60px 0 rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(34, 197, 94, 0.1)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Success Icon */}
+            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <div style={{
+                width: '80px',
+                height: '80px',
+                margin: '0 auto',
+                background: 'rgba(34, 197, 94, 0.1)',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '3px solid rgba(34, 197, 94, 0.3)',
+              }}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgb(34, 197, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              </div>
+            </div>
+
+            <h3 style={{
+              color: '#fff',
+              fontSize: '24px',
+              fontWeight: 600,
+              marginBottom: '12px',
+              textAlign: 'center',
+            }}>
+              Segmentation Complete!
+            </h3>
+            
+            <p style={{
+              color: 'rgba(255, 255, 255, 0.7)',
+              fontSize: '14px',
+              marginBottom: '24px',
+              textAlign: 'center',
+              lineHeight: '1.6',
+            }}>
+              Brain tumor segmentation has been successfully completed using the <strong style={{ color: 'rgb(59, 130, 246)' }}>{selectedModel.toUpperCase()}</strong> model. You can now toggle the overlay to view the results.
+            </p>
+
+            {/* Summary Statistics */}
+            {segmentationSummary && (
+              <div style={{
+                background: 'rgba(0, 0, 0, 0.3)',
+                borderRadius: '8px',
+                padding: '16px',
+                marginBottom: '24px',
+              }}>
+                <h4 style={{ color: '#fff', fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
+                  Segmentation Summary
+                </h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13px' }}>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Total Tumor Voxels:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.total_tumor_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Necrotic Core:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.necrotic_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Edema:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.edema_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Enhancing Tumor:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.enhancing_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowSuccessModal(false)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'rgba(34, 197, 94, 0.2)',
+                border: '1px solid rgba(34, 197, 94, 0.4)',
+                borderRadius: '8px',
+                color: 'rgb(34, 197, 94)',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(34, 197, 94, 0.3)';
+                e.currentTarget.style.borderColor = 'rgba(34, 197, 94, 0.6)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(34, 197, 94, 0.2)';
+                e.currentTarget.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Annotation Modal */}
       {showAnnotationModal && (
         <div
@@ -2192,40 +2401,40 @@ const DicomViewer: React.FC = () => {
                       pointerEvents: 'auto', // Enable interaction for 3D
             }}
           />
-                ) : (
-                  <>
-                    <canvas
+      ) : (
+        <>
+          <canvas
                       key={`2d-${window.id}`} // Force remount when switching to 2D
                       ref={el => { 
                         if (el) {
                           canvasRefs.current[idx] = el;
                         }
                       }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        height: "100%",
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
                         pointerEvents: 'none',
-                      }}
-                    />
+            }}
+          />
                     {/* Overlay canvas for measurements and annotations */}
-                    <canvas
+          <canvas
                       ref={el => {
                         if (el) {
                           overlayRefs.current[idx] = el;
                         }
                       }}
-                      style={{
+            style={{
                         position: 'absolute',
-                        top: 0,
-                        left: 0,
+              top: 0,
+              left: 0,
                         width: '100%',
                         height: '100%',
                         pointerEvents: mode !== 'none' ? 'auto' : 'none', // Enable clicks when measurement mode active
-                      }}
-                    />
-                  </>
-                )}
+            }}
+          />
+        </>
+      )}
     </div>
   ))}
 </div>
@@ -2612,7 +2821,7 @@ const DicomViewer: React.FC = () => {
 
           {/* WINDOWS Section */}
           <div style={{ marginBottom: '0px' }}>
-            <button
+                <button
               onClick={() => toggleSection('windows')}
               style={{
                 width: '100%',
@@ -2678,9 +2887,9 @@ const DicomViewer: React.FC = () => {
 
                   <div style={{ fontSize: '12px', color: '#64748b', marginTop: '12px', marginBottom: '4px' }}>
                     Active windows: {dynamicWindows.length}
-                  </div>
-                  
-                  <div style={{ 
+                </div>
+
+                  <div style={{
                     fontSize: '12px', 
                     color: '#3b82f6', 
                     marginTop: '4px',
@@ -2738,9 +2947,65 @@ const DicomViewer: React.FC = () => {
               </div>
               <span style={{ fontSize: '18px' }}>{expandedSections.upload ? '▼' : '▶'}</span>
                 </button>
-           {expandedSections.upload && (
+            {expandedSections.upload && (
   <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
     <input id="niftiUpload" type="file" accept=".nii,.nii.gz" multiple className="upload-box" />
+
+    {/* Model Selector */}
+    <div style={{
+      background: 'rgba(51, 65, 85, 0.4)',
+      borderRadius: '8px',
+      padding: '12px',
+      border: '1px solid rgba(148, 163, 184, 0.2)',
+    }}>
+      <label style={{
+        color: 'rgba(255, 255, 255, 0.8)',
+        fontSize: '13px',
+        fontWeight: 600,
+        marginBottom: '8px',
+        display: 'block',
+      }}>
+        Segmentation Model
+      </label>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <button
+          onClick={() => setSelectedModel('unet')}
+          disabled={isPredicting}
+          style={{
+            flex: 1,
+            padding: '10px',
+            background: selectedModel === 'unet' ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
+            border: selectedModel === 'unet' ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(148, 163, 184, 0.2)',
+            borderRadius: '6px',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: selectedModel === 'unet' ? 600 : 500,
+            cursor: isPredicting ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          U-Net
+        </button>
+        <button
+          onClick={() => setSelectedModel('pspnet')}
+          disabled={isPredicting}
+          style={{
+            flex: 1,
+            padding: '10px',
+            background: selectedModel === 'pspnet' ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
+            border: selectedModel === 'pspnet' ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(148, 163, 184, 0.2)',
+            borderRadius: '6px',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: selectedModel === 'pspnet' ? 600 : 500,
+            cursor: isPredicting ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          PSPNet
+        </button>
+      </div>
+    </div>
 
     {/* Predict Button */}
     <button
@@ -2759,19 +3024,41 @@ const DicomViewer: React.FC = () => {
         opacity: (!niftiData || !mriId || isPredicting) ? 0.5 : 1,
         transition: 'all 0.2s ease',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         gap: '8px',
       }}
+      title={!mriId ? "Backend not available - prediction features require backend server" : ""}
     >
       {isPredicting ? (
         <>
-          Running Prediction...
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              border: '3px solid rgba(255,255,255,0.3)',
+              borderTop: '3px solid #fff',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+            }} />
+            Running...
+          </div>
+          <div style={{ fontSize: '11px', opacity: 0.8, textAlign: 'center' }}>
+            {predictionProgress}
+          </div>
         </>
       ) : (
         'Run Prediction'
       )}
     </button>
+    
+    <style>{`
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    `}</style>
 
     {/* Overlay Toggle */}
     <button
@@ -2791,12 +3078,12 @@ const DicomViewer: React.FC = () => {
     >
       {showOverlay ? 'Hide Overlay' : 'Show Overlay'}
     </button>
-  </div>
+        </div>
 )}
 
         </div>
-     </div>      
-  </div>
+      </div>
+      </div>
 
       {/* Reset Button - Bottom Right */}
       <button
