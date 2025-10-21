@@ -6,3 +6,7 @@ python-multipart
 python-dotenv
 boto3
 nibabel
+torch
+segmentation-models-pytorch
+tqdm
+numpy

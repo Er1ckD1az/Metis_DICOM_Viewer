@@ -1,25 +1,103 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
 import { Niivue } from "@niivue/niivue";
 
+const API_BASE_URL = 'http://localhost:8000'; // Backend URL
+
+const uploadNiftiFile = async (file: File): Promise<{ 
+  mri_id: number; 
+  file_path: string; 
+  message: string 
+}> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE_URL}/mri`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Upload failed:', response.status, errorText);
+    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+  console.log('🟢 Upload successful:', result);
+  return result;
+};
+
 const DicomViewer: React.FC = () => {
   const location = useLocation();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const overlayRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Multi-grid refs for 4-viewer grid
+  const canvasRefs = useRef<Array<HTMLCanvasElement | null>>([null, null, null, null]);
+  const overlayRefs = useRef<Array<HTMLCanvasElement | null>>([null, null, null, null]);
+  
+  // NiiVue instances for 3D rendering (one per window)
+  const nv3DRefs = useRef<Map<number, any>>(new Map());
+  
+  // Track if demo has been loaded to prevent infinite loop
+  const demoLoadedRef = useRef(false);
 
   const [hasImage, setHasImage] = useState(false);
-  const [currentSlice, setCurrentSlice] = useState(0);
-  const [maxSlices, setMaxSlices] = useState(0);
-  const [currentView, setCurrentView] = useState<'axial' | 'coronal' | 'sagittal'>('axial');
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
   const [dimensions, setDimensions] = useState<[number, number, number]>([0, 0, 0]);
-  const [windowLevel, setWindowLevel] = useState(200);
-  const [windowWidth, setWindowWidth] = useState(600);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [mriId, setMriId] = useState<number | null>(null);
+
+  const [predictionMask, setPredictionMask] = useState<Float32Array | null>(null);
+  const [predictionDimensions, setPredictionDimensions] = useState<[number, number, number]>([0, 0, 0]);
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [predictionError, setPredictionError] = useState<string | null>(null);
+  const [predictionProgress, setPredictionProgress] = useState<string>('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
+  const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
+
+  // Dynamic windows state with per-window settings
+  type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
+  type WindowState = {
+    id: number;
+    view: ViewType;
+    slice: number;
+    windowLevel: number;
+    windowWidth: number;
+    zoomLevel: number;
+    panOffset: { x: number; y: number };
+    // Per-window prediction state
+    mriId: number | null;
+    selectedModel: 'pspnet' | 'unet';
+    segmentationData: Float32Array | null;
+    segmentationDimensions: [number, number, number];
+    showOverlay: boolean;
+    isPredicting: boolean;
+  };
+  
+  const [dynamicWindows, setDynamicWindows] = useState<WindowState[]>([
+    { 
+      id: 1, 
+      view: 'axial',
+      slice: 0,
+      windowLevel: 200,
+      windowWidth: 600,
+      zoomLevel: 1,
+      panOffset: { x: 0, y: 0 },
+      mriId: null,
+      selectedModel: 'pspnet',
+      segmentationData: null,
+      segmentationDimensions: [0, 0, 0],
+      showOverlay: false,
+      isPredicting: false
+    }
+  ]);
+  const [selectedWindowId, setSelectedWindowId] = useState<number>(1); // Track selected window
+  const nextWindowIdDynamic = useRef(2);
   const isPanning = useRef(false);
   const lastPanPos = useRef({ x: 0, y: 0 });
 
@@ -28,8 +106,8 @@ const DicomViewer: React.FC = () => {
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
   const drawingRef = useRef<{ drawing: boolean; x:number; y:number } | null>(null);
-  const [measurements, setMeasurements] = useState<Array<{ x1:number,y1:number,x2:number,y2:number }>>([]);
-  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string,color:string }>>([]);
+  const [measurements, setMeasurements] = useState<Array<{ x1:number,y1:number,x2:number,y2:number,windowId:number }>>([]);
+  const [annotations, setAnnotations] = useState<Array<{ x:number,y:number,text:string,color:string,windowId:number }>>([]);
   const [hoveredAnnotation, setHoveredAnnotation] = useState<number | null>(null);
   const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null);
 
@@ -49,12 +127,12 @@ const DicomViewer: React.FC = () => {
     isMinimized: boolean;
   }>>([]);
 
-  const nextWindowId = useRef(0);
 
   // Accordion state for collapsible sections
   const [expandedSections, setExpandedSections] = useState<{[key: string]: boolean}>({
-    view: true,
+    view: false,
     tools: false,
+    windows: false,
     transform: false,
     upload: false,
   });
@@ -77,14 +155,100 @@ const DicomViewer: React.FC = () => {
     setMode(newMode);
   };
 
+  // Dynamic window management functions
+  const addWindow = () => {
+    if (dynamicWindows.length >= 4) {
+      alert('Maximum of 4 windows allowed');
+      return;
+    }
+    
+    // Clear all measurements and annotations when adding a new window
+    setMeasurements([]);
+    setAnnotations([]);
+    setHoveredAnnotation(null);
+    
+    const newWindow: WindowState = {
+      id: nextWindowIdDynamic.current++,
+      view: 'axial',
+      slice: Math.floor(dimensions[2] / 2),
+      windowLevel: 200,
+      windowWidth: 600,
+      zoomLevel: 1,
+      panOffset: { x: 0, y: 0 },
+      mriId: mriId, // Inherit the global mriId if available
+      selectedModel: 'pspnet',
+      segmentationData: null,
+      segmentationDimensions: [0, 0, 0],
+      showOverlay: false,
+      isPredicting: false
+    };
+    setDynamicWindows(prev => [...prev, newWindow]);
+  };
+
+  const removeWindow = (id: number) => {
+    if (dynamicWindows.length === 1) {
+      alert('Must have at least one window');
+      return;
+    }
+    
+    // Clear all measurements and annotations when removing a window
+    setMeasurements([]);
+    setAnnotations([]);
+    setHoveredAnnotation(null);
+    
+    setDynamicWindows(prev => prev.filter(w => w.id !== id));
+    // If we're removing the selected window, select the first remaining one
+    if (id === selectedWindowId) {
+      const remaining = dynamicWindows.filter(w => w.id !== id);
+      if (remaining.length > 0) {
+        setSelectedWindowId(remaining[0].id);
+      }
+    }
+  };
+
+  const changeWindowView = (id: number, view: ViewType) => {
+    setDynamicWindows(prev => prev.map(w => {
+      if (w.id !== id) return w;
+      
+      // Set slice to middle of the view
+      let middleSlice = 0;
+      if (view === 'axial') {
+        middleSlice = Math.floor(dimensions[2] / 2);
+      } else if (view === 'coronal') {
+        middleSlice = Math.floor(dimensions[1] / 2);
+      } else if (view === 'sagittal') {
+        middleSlice = Math.floor(dimensions[0] / 2);
+      }
+      
+      return { ...w, view, slice: middleSlice };
+    }));
+  };
+
+  // Update per-window state
+  const updateWindowState = (id: number, updates: Partial<WindowState>) => {
+    setDynamicWindows(prev => prev.map(w =>
+      w.id === id ? { ...w, ...updates } : w
+    ));
+  };
+
   // Load and display NIfTI file (same logic as original)
-  const loadNiftiFile = async (file: File) => {
+  const loadNiftiFile = async (file: File, skipBackendUpload = false) => {
     try {
-      console.log("Loading NIfTI file:", file.name);
+      console.log("🟢 loadNiftiFile called with:", file.name);
+      setCurrentFile(file); // Save file for 3D rendering
       const arrayBuffer = await file.arrayBuffer();
-      if (!nifti.isNIFTI(arrayBuffer)) throw new Error("Not a valid NIfTI file");
+      console.log("🟢 ArrayBuffer loaded, size:", arrayBuffer.byteLength);
+      
+      if (!nifti.isNIFTI(arrayBuffer)) {
+        console.error("❌ Not a valid NIfTI file");
+        throw new Error("Not a valid NIfTI file");
+      }
+      console.log("🟢 Valid NIfTI file confirmed");
+      
       const header = nifti.readHeader(arrayBuffer);
       const dims = [header.dims[1], header.dims[2], header.dims[3]];
+      console.log("🟢 Dimensions:", dims);
+      
       const dataBuffer = nifti.readImage(header, arrayBuffer);
 
       // convert to Float32Array depending on datatype (best-effort)
@@ -122,12 +286,44 @@ const DicomViewer: React.FC = () => {
 
       setNiftiData(rotated);
       setDimensions([y, x, z]);
-      setMaxSlices(z - 1);
-      setCurrentSlice(Math.floor(z/2));
       setHasImage(true);
-      console.log("NIfTI loaded");
+      
+      // Initialize all windows with correct default slice values
+      setDynamicWindows(prev => prev.map(window => ({
+        ...window,
+        slice: window.view === 'axial' ? Math.floor(z / 2) :
+               window.view === 'coronal' ? Math.floor(x / 2) :
+               window.view === 'sagittal' ? Math.floor(y / 2) :
+               0
+      })));
+      
+      console.log("🟢 NIfTI loaded successfully!", {
+        dimensions: [y, x, z],
+        dataLength: rotated.length,
+        hasImage: true
+      });
+
+      // Only upload to backend if not skipped (e.g., for demo files that already exist in S3)
+      if (!skipBackendUpload) {
+        try {
+          console.log("Uploading file to backend...");
+          const uploadResult = await uploadNiftiFile(file);
+          console.log("🟢 File uploaded to backend:", uploadResult);
+          setMriId(uploadResult.mri_id);
+          // Update all windows with the new mriId
+          setDynamicWindows(prev => prev.map(window => ({
+            ...window,
+            mriId: uploadResult.mri_id
+          })));
+        } catch (uploadError) {
+          console.error("❌ Failed to upload file to backend:", uploadError);
+        }
+      } else {
+        console.log("⏩ Skipping backend upload (file already in S3)");
+      }
+
     } catch (error) {
-      console.error("Failed to load NIfTI file:", error);
+      console.error("❌ Failed to load NIfTI file:", error);
       alert("Failed to load NIfTI file. Please check the file format.");
     }
   };
@@ -166,57 +362,378 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  // core render - closely mirrors original behavior
-  const renderSlice = () => {
-    if (!niftiData || !canvasRef.current) return;
-    const canvas = canvasRef.current;
+  const getOverlaySlice = (
+    maskData: Float32Array,
+    dims: [number, number, number],
+    sliceIndex: number,
+    view: string
+  ) => {
+    const [x, y, z] = dims;
+    
+    if (view === 'axial') {
+      const slice = new Float32Array(x * y);
+      for (let j = 0; j < y; j++) {
+        for (let i = 0; i < x; i++) {
+          const dataIndex = i + j * x + sliceIndex * x * y;
+          slice[i + j * x] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: x, height: y };
+    } else if (view === 'coronal') {
+      const slice = new Float32Array(x * z);
+      for (let k = 0; k < z; k++) {
+        for (let i = 0; i < x; i++) {
+          const dataIndex = i + sliceIndex * x + k * x * y;
+          const flippedK = z - 1 - k;
+          slice[i + flippedK * x] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: x, height: z };
+    } else {
+      // sagittal
+      const slice = new Float32Array(y * z);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          const dataIndex = sliceIndex + j * x + k * x * y;
+          const flippedK = z - 1 - k;
+          slice[j + flippedK * y] = maskData[dataIndex];
+        }
+      }
+      return { slice, width: y, height: z };
+    }
+  };
+
+  const detectModality = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/detect`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to detect modality');
+      }
+
+      const result = await response.json();
+      console.log('🟢 Modality detection result:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ Modality detection failed:', error);
+      throw error;
+    }
+  };
+
+  const runSegmentation = async (mriId: number, modelType: 'pspnet' | 'unet' = 'pspnet') => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segment?model_type=${modelType}`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Segmentation failed');
+      }
+
+      const result = await response.json();
+      console.log('🟢 Segmentation result:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ Segmentation failed:', error);
+      throw error;
+    }
+  };
+
+  const downloadSegmentationMask = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
+
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation mask');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+
+      const header = nifti.readHeader(arrayBuffer);
+      const dims = [header.dims[1], header.dims[2], header.dims[3]];
+      console.log("🟢 Segmentation dimensions:", dims);
+
+      const dataBuffer = nifti.readImage(header, arrayBuffer);
+
+      let data;
+      const datatype = (header as any).datatype || 4;
+      if (datatype === 4) {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      } else if (datatype === 8) {
+        const int32Data = new Int32Array(dataBuffer);
+        data = new Float32Array(int32Data);
+      } else if (datatype === 16) {
+        data = new Float32Array(dataBuffer);
+      } else {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      }
+
+      // Apply same rotation as original image
+      const [x, y, z] = dims;
+      const rotated = new Float32Array(data.length);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          for (let i = 0; i < x; i++) {
+            const originalIndex = i + j * x + k * x * y;
+            const newI = j;
+            const newJ = x - 1 - i;
+            const newK = k;
+            const flippedJ = y - 1 - newJ;
+            const newIndex = newI + flippedJ * y + newK * y * x;
+            rotated[newIndex] = data[originalIndex];
+          }
+        }
+      }
+
+      setPredictionMask(rotated);
+      setPredictionDimensions([y, x, z]);
+      console.log('🟢 Segmentation mask loaded successfully');
+      
+      return rotated;
+    } catch (error) {
+      console.error('❌ Failed to load segmentation mask:', error);
+      throw error;
+    }
+  };
+
+  const handlePrediction = async () => {
+    if (!niftiData || !mriId) {
+      alert("Please load an image first before running prediction.");
+      return;
+    }
+    
+    setIsPredicting(true);
+    setPredictionError(null);
+    setPredictionProgress('Initializing...');
+
+    try {
+      // Step 1: Detect modality
+      setPredictionProgress('Detecting MRI modality...');
+      console.log('Step 1: Detecting modality...');
+      await detectModality(mriId);
+
+      // Step 2: Run segmentation
+      setPredictionProgress(`Running ${selectedModel.toUpperCase()} segmentation model... (this may take 15-20 seconds)`);
+      console.log(`Step 2: Running segmentation with ${selectedModel} model...`);
+      const segResult = await runSegmentation(mriId, selectedModel);
+      
+      console.log('Segmentation summary:', segResult.summary);
+      setSegmentationSummary(segResult.summary);
+
+      // Step 3: Download and load the mask
+      setPredictionProgress('Downloading segmentation results...');
+      console.log('Step 3: Downloading segmentation mask...');
+      await downloadSegmentationMask(mriId);
+
+      setPredictionProgress('Complete!');
+      setShowSuccessModal(true);
+
+    } catch (error: any) {
+      console.error('❌ Prediction pipeline failed:', error);
+      setPredictionError(error.message);
+      alert(`Prediction failed: ${error.message}`);
+    } finally {
+      setIsPredicting(false);
+      setPredictionProgress('');
+    }
+  };
+
+  // Per-window prediction function
+  const runWindowPrediction = async (windowId: number) => {
+    const window = dynamicWindows.find(w => w.id === windowId);
+    if (!window || !window.mriId) {
+      alert("No MRI loaded for this window.");
+      return;
+    }
+
+    // Set window to predicting state
+    updateWindowState(windowId, { isPredicting: true });
+
+    try {
+      console.log(`🟢 Running prediction for window ${windowId} with ${window.selectedModel.toUpperCase()} model`);
+      
+      // Step 1: Detect modality
+      console.log('Step 1: Detecting modality...');
+      await detectModality(window.mriId);
+
+      // Step 2: Run segmentation
+      console.log(`Step 2: Running segmentation with ${window.selectedModel} model...`);
+      const segResult = await runSegmentation(window.mriId, window.selectedModel);
+      
+      console.log('Segmentation result:', segResult);
+
+      // Step 3: Download and load the mask for this window
+      console.log('Step 3: Downloading segmentation mask...');
+      const maskData = await downloadSegmentationMaskForWindow(window.mriId);
+
+      // Update window with segmentation data
+      updateWindowState(windowId, {
+        segmentationData: maskData.data,
+        segmentationDimensions: maskData.dimensions,
+        isPredicting: false
+      });
+
+      console.log(`✅ Prediction complete for window ${windowId} using ${window.selectedModel.toUpperCase()}`);
+      
+      // Show success modal with summary
+      setSegmentationSummary(segResult.summary);
+      setShowSuccessModal(true);
+
+    } catch (error: any) {
+      console.error(`❌ Prediction failed for window ${windowId}:`, error);
+      alert(`Prediction failed: ${error.message}`);
+      updateWindowState(windowId, { isPredicting: false });
+    }
+  };
+
+  // Download segmentation mask for a specific window (doesn't update global state)
+  const downloadSegmentationMaskForWindow = async (mriId: number) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
+
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation mask');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+
+      const header = nifti.readHeader(arrayBuffer);
+      const dims = [header.dims[1], header.dims[2], header.dims[3]];
+      console.log("🟢 Segmentation dimensions:", dims);
+
+      const dataBuffer = nifti.readImage(header, arrayBuffer);
+
+      let data;
+      const datatype = (header as any).datatype || 4;
+      if (datatype === 4) {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      } else if (datatype === 8) {
+        const int32Data = new Int32Array(dataBuffer);
+        data = new Float32Array(int32Data);
+      } else if (datatype === 16) {
+        data = new Float32Array(dataBuffer);
+      } else {
+        const int16Data = new Int16Array(dataBuffer);
+        data = new Float32Array(int16Data);
+      }
+
+      // Apply same rotation as original image
+      const [x, y, z] = dims;
+      const rotated = new Float32Array(data.length);
+      for (let k = 0; k < z; k++) {
+        for (let j = 0; j < y; j++) {
+          for (let i = 0; i < x; i++) {
+            const originalIndex = i + j * x + k * x * y;
+            const newI = j;
+            const newJ = x - 1 - i;
+            const newK = k;
+            const flippedJ = y - 1 - newJ;
+            const newIndex = newI + flippedJ * y + newK * y * x;
+            rotated[newIndex] = data[originalIndex];
+          }
+        }
+      }
+
+      console.log('🟢 Segmentation mask loaded successfully');
+      
+      return { data: rotated, dimensions: [y, x, z] as [number, number, number] };
+    } catch (error) {
+      console.error('❌ Failed to load segmentation mask:', error);
+      throw error;
+    }
+  };
+
+  // Render a single view to a specific canvas with per-window settings
+  const renderViewToCanvas = (
+    canvas: HTMLCanvasElement,
+    view: 'axial' | 'coronal' | 'sagittal',
+    sliceIndex: number,
+    winLevel: number,
+    winWidth: number,
+    zoom: number,
+    pan: { x: number; y: number },
+    // Per-window overlay data
+    windowShowOverlay: boolean = false,
+    windowSegmentationData: Float32Array | null = null,
+    windowSegmentationDimensions: [number, number, number] = [0, 0, 0]
+  ) => {
+    if (!niftiData) return;
+
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      console.warn('Cannot get 2D context for canvas - it may already have a WebGL context');
+      return;
+    }
 
-    const overlay = overlayRef.current;
+    const { slice, width, height } = getSlice(niftiData, dimensions, sliceIndex, view);
 
-    const { slice, width, height } = getSlice(niftiData, dimensions, currentSlice, currentView);
-
-    // Get actual viewer size from the wrapper element
-    const wrapper = wrapperRef.current;
-    const viewerWidth = wrapper?.clientWidth || 800;
-    const viewerHeight = wrapper?.clientHeight || 600;
-    const scale = Math.max(viewerWidth / width, viewerHeight / height);
+    // Calculate display size based on canvas container
+    const containerWidth = canvas.parentElement?.clientWidth || 400;
+    const containerHeight = canvas.parentElement?.clientHeight || 400;
+    const scale = Math.min(containerWidth / width, containerHeight / height) * 0.9;
     const displayWidth = Math.floor(width * scale);
     const displayHeight = Math.floor(height * scale);
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = displayWidth * dpr;
-    canvas.height = displayHeight * dpr;
-    canvas.style.width = `${displayWidth}px`;
-    canvas.style.height = `${displayHeight}px`;
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerHeight * dpr;
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerHeight}px`;
 
-    // scale context for DPR
-    ctx.setTransform(dpr,0,0,dpr,0,0);
+    // Apply zoom and pan transformations
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, containerWidth * dpr, containerHeight * dpr);
+    
+    // Fill canvas with pure black first
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, containerWidth * dpr, containerHeight * dpr);
+    
+    // Apply transformations: DPR first, then zoom and pan
+    const centerX = containerWidth / 2;
+    const centerY = containerHeight / 2;
+    
+    // Start with DPR scaling
+    ctx.scale(dpr, dpr);
+    
+    // Apply pan (in screen space)
+    ctx.translate(pan.x, pan.y);
+    
+    // Move to center, apply zoom, move back
+    ctx.translate(centerX, centerY);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-centerX, -centerY);
+    
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
 
-    // window/level
-    const wlMin = windowLevel - windowWidth / 2;
-    const wlMax = windowLevel + windowWidth / 2;
+    // window/level - use per-window values
+    const wlMin = winLevel - winWidth / 2;
+    const wlMax = winLevel + winWidth / 2;
     const windowed = new Uint8ClampedArray(width * height);
 
-    for (let j=0;j<height;j++){
-      for (let i=0;i<width;i++){
-        const val = slice[i + j*width];
-        if (val < wlMin) windowed[i + j*width] = 0;
-        else if (val > wlMax) windowed[i + j*width] = 255;
+    for (let j = 0; j < height; j++) {
+      for (let i = 0; i < width; i++) {
+        const val = slice[i + j * width];
+        if (val < wlMin) windowed[i + j * width] = 0;
+        else if (val > wlMax) windowed[i + j * width] = 255;
         else {
       const normalized = (val - wlMin) / (wlMax - wlMin);
-          windowed[i + j*width] = Math.floor(Math.pow(normalized, 0.9) * 255);
+          windowed[i + j * width] = Math.floor(Math.pow(normalized, 0.9) * 255);
         }
       }
     }
 
     const imageData = ctx.createImageData(displayWidth, displayHeight);
 
-    for (let yPix=0;yPix<displayHeight;yPix++){
-      for (let xPix=0;xPix<displayWidth;xPix++){
+    for (let yPix = 0; yPix < displayHeight; yPix++) {
+      for (let xPix = 0; xPix < displayWidth; xPix++) {
         const srcX = xPix / scale;
         const srcY = yPix / scale;
         const x1 = Math.floor(srcX);
@@ -251,14 +768,14 @@ const DicomViewer: React.FC = () => {
 
         const pixelIndex = (yPix * displayWidth + xPix) * 4;
 
-        // Threshold: if original value is very low, it's background
-        // Set to viewer background color instead of showing it
-        const backgroundThreshold = wlMin + (wlMax - wlMin) * 0.05; // 5% of window range
-        if (origVal < backgroundThreshold) {
-          // Set to viewer background color #2e2e2e = rgb(46, 46, 46)
-          imageData.data[pixelIndex] = 46;
-          imageData.data[pixelIndex + 1] = 46;
-          imageData.data[pixelIndex + 2] = 46;
+        // Use fixed absolute threshold for background - independent of window/level settings
+        // This ensures background stays black regardless of brightness/contrast adjustments
+        const absoluteBackgroundThreshold = 50; // Fixed threshold for background detection
+        if (origVal < absoluteBackgroundThreshold) {
+          // Set to pure black background
+          imageData.data[pixelIndex] = 0;
+          imageData.data[pixelIndex + 1] = 0;
+          imageData.data[pixelIndex + 2] = 0;
           imageData.data[pixelIndex + 3] = 255;
         } else {
           imageData.data[pixelIndex] = val;
@@ -269,120 +786,370 @@ const DicomViewer: React.FC = () => {
       }
     }
 
-    // apply flip, zoom, and pan transforms to canvas via CSS transform
-    const flipX = flipH ? -1 : 1;
-    const flipY = flipV ? -1 : 1;
-    (canvas.style as any).transform = `translate(${panOffset.x}px, ${panOffset.y}px) scale(${flipX * zoomLevel}, ${flipY * zoomLevel})`;
+    // Create temporary canvas for the image data
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = displayWidth;
+    tempCanvas.height = displayHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    
+    // Center the image in the container
+    const offsetX = (containerWidth - displayWidth) / 2;
+    const offsetY = (containerHeight - displayHeight) / 2;
+    
+    if (tempCtx) {
+      tempCtx.putImageData(imageData, 0, 0);
+      
+      // Draw the temp canvas onto the main canvas with current transformations
+      ctx.drawImage(tempCanvas, offsetX, offsetY, displayWidth, displayHeight);
+    }
 
-    ctx.setTransform(1,0,0,1,0,0);
-    ctx.putImageData(imageData, 0, 0);
+    if (windowShowOverlay && windowSegmentationData && windowSegmentationDimensions[0] > 0) {
+    try {
+      const { slice: maskSlice, width: maskWidth, height: maskHeight } = getOverlaySlice(
+        windowSegmentationData,
+        windowSegmentationDimensions,
+        sliceIndex,
+        view
+      );
 
-    // overlay sizing and draw
-    if (overlay) {
-      // Set overlay to match the rendered canvas size EXACTLY
-      // Use the actual pixel dimensions that were set on the canvas
-      overlay.width = canvas.width;
-      overlay.height = canvas.height;
-      overlay.style.width = canvas.style.width;
-      overlay.style.height = canvas.style.height;
-      const octx = overlay.getContext('2d');
-      if (octx) {
-        octx.setTransform(dpr,0,0,dpr,0,0);
-        octx.clearRect(0,0,displayWidth,displayHeight);
+      // Create overlay canvas
+      const overlayCanvas = document.createElement('canvas');
+      overlayCanvas.width = displayWidth;
+      overlayCanvas.height = displayHeight;
+      const overlayCtx = overlayCanvas.getContext('2d');
+      
+      if (overlayCtx) {
+        const overlayImageData = overlayCtx.createImageData(displayWidth, displayHeight);
 
-        // draw measurements
-        octx.strokeStyle = '#00FF00';
-        octx.lineWidth = 2;
-        octx.fillStyle = '#00FF00';
-        measurements.forEach(m => {
-          octx.beginPath();
-          octx.moveTo(m.x1, m.y1);
-          octx.lineTo(m.x2, m.y2);
-          octx.stroke();
-          const dx = m.x2 - m.x1;
-          const dy = m.y2 - m.y1;
-          const dist = Math.sqrt(dx*dx + dy*dy).toFixed(1);
-          octx.fillText(`${dist}px`, (m.x1 + m.x2)/2 + 5, (m.y1 + m.y2)/2 - 5);
-        });
+        // Render the overlay with color coding
+        for (let yPix = 0; yPix < displayHeight; yPix++) {
+          for (let xPix = 0; xPix < displayWidth; xPix++) {
+            const srcX = xPix / scale;
+            const srcY = yPix / scale;
+            const x1 = Math.floor(srcX);
+            const y1 = Math.floor(srcY);
+            const x2 = Math.min(x1 + 1, maskWidth - 1);
+            const y2 = Math.min(y1 + 1, maskHeight - 1);
+            const fx = srcX - x1;
+            const fy = srcY - y1;
 
-        // draw annotations
-        annotations.forEach((a, idx) => {
-          // Draw colored circle
-          octx.beginPath();
-          octx.arc(a.x, a.y, 8, 0, Math.PI*2);
-          octx.fillStyle = a.color;
-          octx.fill();
-          octx.strokeStyle = '#fff';
-          octx.lineWidth = 2;
-          octx.stroke();
+            const m1 = maskSlice[x1 + y1 * maskWidth] || 0;
+            const m2 = maskSlice[x2 + y1 * maskWidth] || 0;
+            const m3 = maskSlice[x1 + y2 * maskWidth] || 0;
+            const m4 = maskSlice[x2 + y2 * maskWidth] || 0;
 
-          // Draw tooltip if hovered
-          if (hoveredAnnotation === idx) {
-            const padding = 8;
-            const fontSize = 12;
-            octx.font = `${fontSize}px system-ui`;
-            const textWidth = octx.measureText(a.text).width;
-            const tooltipWidth = textWidth + padding * 2;
-            const tooltipHeight = fontSize + padding * 2;
-            const tooltipX = a.x + 12;
-            const tooltipY = a.y - tooltipHeight - 8;
+            const maskVal =
+              m1 * (1 - fx) * (1 - fy) +
+              m2 * fx * (1 - fy) +
+              m3 * (1 - fx) * fy +
+              m4 * fx * fy;
 
-            // Draw tooltip background
-            octx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-            octx.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
-            octx.strokeStyle = a.color;
-            octx.lineWidth = 2;
-            octx.strokeRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+            const pixelIndex = (yPix * displayWidth + xPix) * 4;
 
-            // Draw text
-            octx.fillStyle = '#fff';
-            octx.fillText(a.text, tooltipX + padding, tooltipY + fontSize + padding - 2);
+            if (maskVal > 0.5) {
+              const alpha = 0.4;
+              
+              // Color coding: 1=red (necrotic), 2=green (edema), 3=blue (enhancing)
+              let r = 0, g = 0, b = 0;
+              const roundedMaskVal = Math.round(maskVal);
+              
+              if (roundedMaskVal === 1) {
+                r = 255; g = 0; b = 0; // Red for necrotic
+              } else if (roundedMaskVal === 2) {
+                r = 0; g = 255; b = 0; // Green for edema
+              } else if (roundedMaskVal === 3) {
+                r = 0; g = 100; b = 255; // Blue for enhancing
+              }
+
+              overlayImageData.data[pixelIndex] = r;
+              overlayImageData.data[pixelIndex + 1] = g;
+              overlayImageData.data[pixelIndex + 2] = b;
+              overlayImageData.data[pixelIndex + 3] = Math.floor(alpha * 255); // Alpha channel
+            } else {
+              // Transparent where no tumor
+              overlayImageData.data[pixelIndex + 3] = 0;
+            }
           }
-        });
-
-        // Draw eraser cursor
-        if (mode === 'erase' && cursorPosition) {
-          octx.beginPath();
-          octx.arc(cursorPosition.x, cursorPosition.y, 12, 0, Math.PI*2);
-          octx.strokeStyle = '#FF4444';
-          octx.lineWidth = 2;
-          octx.setLineDash([4, 4]);
-          octx.stroke();
-          octx.setLineDash([]);
-
-          // Draw X in the circle
-          octx.strokeStyle = '#FF4444';
-          octx.lineWidth = 2;
-          const xSize = 6;
-          octx.beginPath();
-          octx.moveTo(cursorPosition.x - xSize, cursorPosition.y - xSize);
-          octx.lineTo(cursorPosition.x + xSize, cursorPosition.y + xSize);
-          octx.moveTo(cursorPosition.x + xSize, cursorPosition.y - xSize);
-          octx.lineTo(cursorPosition.x - xSize, cursorPosition.y + xSize);
-          octx.stroke();
         }
 
-        // DEBUG: Draw border around overlay canvas to show its boundaries
-        octx.strokeStyle = '#FF00FF';
-        octx.lineWidth = 4;
-        octx.strokeRect(2, 2, displayWidth - 4, displayHeight - 4);
+        overlayCtx.putImageData(overlayImageData, 0, 0);
+        
+        // Draw overlay on main canvas with same offset as the MRI image
+        ctx.drawImage(overlayCanvas, offsetX, offsetY, displayWidth, displayHeight);
+      }
+      } catch (error) {
+        console.error('Error rendering overlay:', error);
       }
     }
   };
 
+  // Draw measurements and annotations on overlay for a specific window with zoom/pan transformations
+  const drawMeasurementsAndAnnotations = (overlayIdx: number, windowId: number) => {
+    const overlay = overlayRefs.current[overlayIdx];
+    if (!overlay) return;
+
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    // Get the window's zoom and pan state
+    const window = dynamicWindows.find(w => w.id === windowId);
+    if (!window) return;
+
+    const zoom = window.zoomLevel;
+    const pan = window.panOffset;
+
+    const dpr = globalThis.devicePixelRatio || 1;
+    
+    // Set canvas size to match its display size
+    const parent = overlay.parentElement;
+    const containerWidth = parent?.clientWidth || 400;
+    const containerHeight = parent?.clientHeight || 400;
+    
+    if (parent) {
+      overlay.width = containerWidth * dpr;
+      overlay.height = containerHeight * dpr;
+      overlay.style.width = `${containerWidth}px`;
+      overlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Apply the same transformations as the main canvas to make annotations stick to the image
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    
+    // Apply transformations: DPR first, then zoom and pan (same as main canvas)
+    const centerX = containerWidth / 2;
+    const centerY = containerHeight / 2;
+    
+    // Start with DPR scaling
+    ctx.scale(dpr, dpr);
+    
+    // Apply pan (in screen space)
+    ctx.translate(pan.x, pan.y);
+    
+    // Move to center, apply zoom, move back
+    ctx.translate(centerX, centerY);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-centerX, -centerY);
+
+    // Draw only measurements for this window
+    // Line width and font size should stay constant regardless of zoom
+    const baseLineWidth = 2 / zoom;
+    const baseFontSize = 12 / zoom;
+    const baseCircleRadius = 8 / zoom;
+    
+    measurements.filter(m => m.windowId === windowId).forEach((m) => {
+      ctx.beginPath();
+      ctx.moveTo(m.x1, m.y1);
+      ctx.lineTo(m.x2, m.y2);
+      ctx.strokeStyle = '#00FF00';
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+      
+          const dx = m.x2 - m.x1;
+          const dy = m.y2 - m.y1;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      ctx.fillStyle = '#00FF00';
+      ctx.font = `${baseFontSize}px system-ui`;
+      ctx.fillText(`${distance.toFixed(1)}px`, (m.x1 + m.x2) / 2 + 5 / zoom, (m.y1 + m.y2) / 2 - 5 / zoom);
+    });
+
+    // Draw only annotations for this window
+    const windowAnnotations = annotations.filter(a => a.windowId === windowId);
+    windowAnnotations.forEach((a) => {
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, baseCircleRadius, 0, Math.PI * 2);
+      ctx.fillStyle = a.color;
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+
+      // Draw text if hovered (need to find the actual index in the full annotations array)
+      const fullIdx = annotations.indexOf(a);
+      if (hoveredAnnotation === fullIdx && a.text) {
+        const textOffset = 12 / zoom;
+        const boxWidth = 100 / zoom;
+        const boxHeight = 24 / zoom;
+        const textPadding = 4 / zoom;
+        
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect(a.x + textOffset, a.y - 20 / zoom, boxWidth, boxHeight);
+        ctx.fillStyle = '#fff';
+        ctx.font = `${baseFontSize}px system-ui`;
+        ctx.fillText(a.text, a.x + textOffset + textPadding, a.y - textPadding);
+      }
+    });
+  };
+
+  // Render all views to the grid (dynamic windows) - using per-window state
+  const renderAllViews = () => {
+    if (!niftiData) {
+      console.log('renderAllViews: no niftiData');
+      return;
+    }
+
+    console.log('renderAllViews called for', dynamicWindows.length, 'windows');
+
+    // Render each window based on its view type and individual state
+    dynamicWindows.forEach((window, idx) => {
+      const canvas = canvasRefs.current[idx];
+      if (!canvas || window.view === '3d') return; // Skip 3D windows (handled separately)
+
+      const view = window.view as 'axial' | 'coronal' | 'sagittal';
+      
+      // Use the window's own slice index
+      const sliceIndex = window.slice;
+
+      renderViewToCanvas(
+        canvas, 
+        view, 
+        sliceIndex, 
+        window.windowLevel, 
+        window.windowWidth,
+        window.zoomLevel,
+        window.panOffset,
+        // Pass window-specific overlay data
+        window.showOverlay,
+        window.segmentationData,
+        window.segmentationDimensions
+      );
+      
+      // Draw measurements and annotations on the overlay for this specific window
+      drawMeasurementsAndAnnotations(idx, window.id);
+      
+      console.log(`Rendered ${view} view in window ${window.id} at slice ${sliceIndex}`);
+    });
+  };
+
+  // Create a stable reference that only changes when window structure changes (not properties like zoom/brightness)
+  const windowStructureKey = dynamicWindows.map(w => `${w.id}-${w.view}`).join(',');
+  const windowStructure = useMemo(() => 
+    dynamicWindows.map(w => ({ id: w.id, view: w.view })),
+    [windowStructureKey]
+  );
+
+  // Initialize 3D rendering for any window with view '3d' - MUST happen BEFORE 2D rendering
   useEffect(() => {
-    renderSlice();
+    if (!currentFile) return;
+
+    const currentWindowIds = new Set(dynamicWindows.filter(w => w.view === '3d').map(w => w.id));
+    
+    // Clean up 3D viewers that are no longer needed
+    nv3DRefs.current.forEach((nv, windowId) => {
+      if (!currentWindowIds.has(windowId)) {
+        console.log(`🟢 Cleaning up 3D viewer for window ${windowId}`);
+        try {
+          nv.destroy();
+          nv3DRefs.current.delete(windowId);
+        } catch (e) {
+          console.error('Error destroying 3D viewer:', e);
+        }
+      }
+    });
+
+    // Initialize 3D rendering for each window with 3D view (with slight delay to ensure canvas is ready)
+    const timer = setTimeout(() => {
+      dynamicWindows.forEach((window, idx) => {
+        if (window.view !== '3d') return;
+
+        const canvas = canvasRefs.current[idx];
+        if (!canvas) {
+          console.log(`3D render: canvas not ready for window ${window.id}`);
+          return;
+        }
+
+        // Skip if already initialized for this window
+        if (nv3DRefs.current.has(window.id)) {
+          console.log(`3D viewer already exists for window ${window.id}`);
+          return;
+        }
+
+        console.log(`🟢 Initializing 3D render view in window ${window.id}`);
+        
+        // Ensure canvas has proper dimensions
+        const parent = canvas.parentElement;
+        if (parent) {
+          canvas.width = parent.clientWidth;
+          canvas.height = parent.clientHeight;
+          canvas.style.width = '100%';
+          canvas.style.height = '100%';
+          console.log("Canvas dimensions set:", canvas.width, "x", canvas.height);
+        }
+
+        const nv = new Niivue({
+          show3Dcrosshair: false,
+          backColor: [0, 0, 0, 1],
+          isOrientCube: true,
+        });
+
+        nv.attachToCanvas(canvas);
+        nv3DRefs.current.set(window.id, nv);
+
+        const url = URL.createObjectURL(currentFile);
+        console.log("🟢 Loading volume into 3D viewer...");
+        nv.loadVolumes([{ 
+          url, 
+          name: currentFile.name,
+          colormap: 'gray',
+          opacity: 1.0,
+        }]).then(() => {
+          console.log("🟢 Volume loaded, setting render mode");
+          nv.setSliceType(nv.sliceTypeRender); // Set to 3D render mode
+          
+          console.log("🟢 3D render view initialized successfully");
+        }).catch((error) => {
+          console.error("❌ Error loading volume:", error);
+        });
+      });
+    }, 100); // Small delay to ensure canvas is in DOM and ready
+
+    return () => {
+      clearTimeout(timer); // Clear the timeout
+      // Cleanup all 3D viewers on unmount
+      nv3DRefs.current.forEach((nv) => {
+        try {
+          nv.destroy();
+        } catch (e) {
+          console.error('Error cleaning up 3D viewer:', e);
+        }
+      });
+      nv3DRefs.current.clear();
+    };
+  }, [currentFile, windowStructure]);
+
+  // Render 2D views - happens AFTER 3D initialization
+  useEffect(() => {
+    renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, currentSlice, currentView, windowLevel, windowWidth, flipH, flipV, measurements, annotations, mode, zoomLevel, panOffset, hoveredAnnotation, cursorPosition]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
+
+  // Cleanup viewer windows on unmount
+  useEffect(() => {
+    return () => {
+      viewerWindows.forEach(window => {
+        if (window.nv) {
+          try {
+            window.nv.destroy();
+          } catch (e) {
+            console.error('Error destroying viewer:', e);
+          }
+        }
+      });
+    };
+  }, [viewerWindows]);
 
   // file input handler
   useEffect(() => {
     const input = document.getElementById('niftiUpload') as HTMLInputElement | null;
+    console.log('Setting up file upload handler. Input element found:', !!input);
     if (!input) return;
     const handleFileChange = async (e: Event) => {
+      console.log('File input changed!');
       const file = (e.target as HTMLInputElement).files?.[0];
+      console.log('Selected file:', file?.name);
     if (!file) return;
     if (file.name.toLowerCase().endsWith('.nii') || file.name.toLowerCase().endsWith('.nii.gz')) {
+        console.log('Valid NIfTI file detected, loading...');
       await loadNiftiFile(file);
     } else {
         console.error('Please upload a .nii or .nii.gz file');
@@ -390,7 +1157,7 @@ const DicomViewer: React.FC = () => {
     };
     input.addEventListener('change', handleFileChange);
     return () => input.removeEventListener('change', handleFileChange);
-  }, []);
+  }, [expandedSections.upload]); // Re-run when upload section expands
 
   // Check for uploaded file from landing page or demo mode
   useEffect(() => {
@@ -407,9 +1174,10 @@ const DicomViewer: React.FC = () => {
       }
     }
 
-    // Handle demo mode - load sample file
-    else if (state?.demoMode) {
+    // Handle demo mode - load sample file (only once)
+    else if (state?.demoMode && !demoLoadedRef.current) {
       console.log("Demo mode activated - loading sample file");
+      demoLoadedRef.current = true;
       loadDemoFile();
     }
   }, [location]);
@@ -417,47 +1185,126 @@ const DicomViewer: React.FC = () => {
   // Load demo NIfTI file from public folder
   const loadDemoFile = async () => {
     try {
-      const response = await fetch('/demo-sample.nii');
+      console.log("Loading demo files...");
+      
+      // Define all 4 modality files
+      const modalities = ['flair', 't1', 't1ce', 't2'];
+      const patientId = 'BraTS20_Validation_001';
+      
+      // Try to use backend, fallback to direct loading if backend unavailable
+      let backendAvailable = true;
+      let uploadedMriId: number | null = null;
+      
+      try {
+        // First, check if demo files already exist in backend
+        console.log("Checking if demo files already exist in backend...");
+        const checkResponse = await fetch(`${API_BASE_URL}/mri`);
+        
+        if (checkResponse.ok) {
+          const existingFiles = await checkResponse.json();
+          
+          // Look for existing flair file for this patient
+          const existingFlair = existingFiles.find((file: any) => 
+            file.file_name === `${patientId}_flair.nii`
+          );
+          
+          if (existingFlair) {
+            console.log("🟢 Demo files already exist in backend (S3), loading directly from backend...");
+            uploadedMriId = existingFlair.id;
+            setMriId(existingFlair.id);
+            
+            // Update all windows with the mriId
+            setDynamicWindows(prev => prev.map(window => ({
+              ...window,
+              mriId: existingFlair.id
+            })));
+            
+            // Fetch the flair file directly from backend (which gets it from S3)
+            console.log(`Fetching flair file from backend (MRI ID: ${existingFlair.id})...`);
+            const dataResponse = await fetch(`${API_BASE_URL}/mri/${existingFlair.id}/data`);
+            
+            if (!dataResponse.ok) {
+              throw new Error(`Failed to fetch flair file from backend: ${dataResponse.statusText}`);
+            }
+            
+            const flairArrayBuffer = await dataResponse.arrayBuffer();
+            const flairBlob = new Blob([flairArrayBuffer]);
+            const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
+            
+            // Skip backend upload since file is already in S3!
+            await loadNiftiFile(flairFile, true);
+            
+            console.log("✅ Demo file loaded successfully from backend (S3) - FAST!");
+            console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
+            return; // Exit early, we're done!
+            
+          } else {
+            // Files don't exist, need to upload them
+            console.log("Demo files not found in backend, uploading...");
+            
+            for (const modality of modalities) {
+              const filename = `${patientId}_${modality}.nii`;
+              console.log(`Fetching ${filename}...`);
+              
+              const response = await fetch(`/${filename}`);
       if (!response.ok) {
-        throw new Error('Demo file not found. Please add demo-sample.nii to the public folder.');
+                throw new Error(`Demo file not found: ${filename}. Please add all 4 modality files to the public folder.`);
       }
+              
       const arrayBuffer = await response.arrayBuffer();
       const blob = new Blob([arrayBuffer]);
-      const file = new File([blob], 'demo-sample.nii', { type: 'application/octet-stream' });
-      await loadNiftiFile(file);
-      console.log("Demo file loaded successfully");
+              const file = new File([blob], filename, { type: 'application/octet-stream' });
+              
+              // Upload each file to backend
+              console.log(`Uploading ${filename} to backend...`);
+              const uploadResult = await uploadNiftiFile(file);
+              
+              // Store the first MRI ID (flair) for prediction
+              if (modality === 'flair' && uploadResult.mri_id) {
+                uploadedMriId = uploadResult.mri_id;
+                console.log(`🟢 Stored MRI ID: ${uploadedMriId} for prediction`);
+              }
+            }
+            
+            console.log("All 4 modality files uploaded successfully to backend");
+            
+            // Set the mriId for prediction features
+            if (uploadedMriId) {
+              setMriId(uploadedMriId);
+            }
+          }
+        }
+        
+      } catch (backendError) {
+        console.warn("Backend not available, using direct file loading:", backendError);
+        backendAvailable = false;
+      }
+      
+      // Load the flair file for display (only if we didn't already load from backend)
+      if (!uploadedMriId || !backendAvailable) {
+        console.log("Loading flair file from public folder...");
+        const flairResponse = await fetch(`/${patientId}_flair.nii`);
+        if (!flairResponse.ok) {
+          throw new Error(`Demo file not found: ${patientId}_flair.nii. Please add the file to the public folder.`);
+        }
+        
+        const flairArrayBuffer = await flairResponse.arrayBuffer();
+        const flairBlob = new Blob([flairArrayBuffer]);
+        const flairFile = new File([flairBlob], `${patientId}_flair.nii`, { type: 'application/octet-stream' });
+        
+        await loadNiftiFile(flairFile);
+        
+        if (backendAvailable) {
+          console.log("🟢 Demo files loaded successfully with backend support");
+          console.log(`🟢 Prediction features enabled with MRI ID: ${uploadedMriId}`);
+        } else {
+          console.log("🟢 Demo files loaded successfully (backend unavailable - prediction features disabled)");
+        }
+      }
     } catch (error) {
-      console.error("Failed to load demo file:", error);
-      alert("Demo file not found. Please add a demo-sample.nii file to the public folder.");
+      console.error("Failed to load demo files:", error);
+      alert(`Demo files not found. Please make sure the flair file is in the public folder:\n- BraTS20_Validation_001_flair.nii`);
     }
-  };
-
-
-
-  const createViewerWindow = () => {
-    if (viewerWindows.length >= 4) {
-        alert('Maximum of 4 viewer windows allowed');
-        return;
-    }
-
-    const id = `viewer-${nextWindowId.current++}`;
-    const canvasRef = React.createRef<HTMLCanvasElement>();
-
-    const newWindow = {
-    id,
-    position: {
-        x: 100 + (viewerWindows.length * 30),
-        y: 100 + (viewerWindows.length * 30)
-    },
-    size: { width: 600, height: 500 },
-    file: null,
-    nv: null,
-    canvasRef,
-    title: `Viewer ${viewerWindows.length + 1}`,
-    isMinimized: false,
-    };
-
-    setViewerWindows(prev => [...prev, newWindow]);
   };
 
   // Close a viewer window
@@ -475,17 +1322,11 @@ const DicomViewer: React.FC = () => {
     });
   };
 
-
-
   const loadFileIntoWindow = (windowId: string, file: File) => {
     setViewerWindows(prev =>
       prev.map(w => (w.id === windowId ? { ...w, file, title: file.name } : w))
     );
   };
-
-
-
-
 
   // Update window position (for dragging)
   const updateWindowPosition = (id: string, x: number, y: number) => {
@@ -548,7 +1389,6 @@ const DicomViewer: React.FC = () => {
       win.nv = nv;
 
       return () => {
-        nv.destroy?.();
         URL.revokeObjectURL(url);
       };
     }, [win.file, showCrosshair]);
@@ -772,9 +1612,15 @@ const DicomViewer: React.FC = () => {
 
 
 
-  // overlay events for measure/annotate
+  // overlay events for measure/annotate - work with selected window
   useEffect(() => {
-    const overlay = overlayRef.current;
+    if (mode === 'none') return; // Only attach when a measurement mode is active
+    
+    // Find the index of the selected window
+    const selectedWindowIndex = dynamicWindows.findIndex(w => w.id === selectedWindowId);
+    if (selectedWindowIndex === -1) return;
+    
+    const overlay = overlayRefs.current[selectedWindowIndex];
     if (!overlay) return;
     const rect = () => overlay.getBoundingClientRect();
 
@@ -801,11 +1647,27 @@ const DicomViewer: React.FC = () => {
       });
 
       if (mode === 'erase') {
-        // Check if clicking on an annotation
+        // Transform mouse position to match annotation/measurement coordinate space
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Reverse the transformations to get annotation space coordinates
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
+          // Check if clicking on an annotation (only for selected window)
         let annotationRemoved = false;
         annotations.forEach((a, idx) => {
-          const dx = p.x - a.x;
-          const dy = p.y - a.y;
+            if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
+            const dx = transformedX - a.x;
+            const dy = transformedY - a.y;
           const distance = Math.sqrt(dx*dx + dy*dy);
           if (distance <= 12 && !annotationRemoved) {
             setAnnotations(prev => prev.filter((_, i) => i !== idx));
@@ -813,27 +1675,45 @@ const DicomViewer: React.FC = () => {
           }
         });
 
-        // Check if clicking on a measurement
+          // Check if clicking on a measurement (only for selected window)
         if (!annotationRemoved) {
           measurements.forEach((m, idx) => {
+              if (m.windowId !== selectedWindowId) return; // Only check measurements for selected window
             // Calculate distance from point to line segment
             const dx = m.x2 - m.x1;
             const dy = m.y2 - m.y1;
             const length = Math.sqrt(dx*dx + dy*dy);
             if (length === 0) return;
 
-            const t = Math.max(0, Math.min(1, ((p.x - m.x1) * dx + (p.y - m.y1) * dy) / (length * length)));
+              const t = Math.max(0, Math.min(1, ((transformedX - m.x1) * dx + (transformedY - m.y1) * dy) / (length * length)));
             const projX = m.x1 + t * dx;
             const projY = m.y1 + t * dy;
-            const distToLine = Math.sqrt((p.x - projX)**2 + (p.y - projY)**2);
+              const distToLine = Math.sqrt((transformedX - projX)**2 + (transformedY - projY)**2);
 
             if (distToLine <= 8) {
               setMeasurements(prev => prev.filter((_, i) => i !== idx));
             }
           });
+          }
         }
       } else if (mode === 'measure' || mode === 'annotate'){
-        drawingRef.current = { drawing: true, x: p.x, y: p.y };
+        // Transform mouse coordinates to image space for storing
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Transform to image space coordinates
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
+          drawingRef.current = { drawing: true, x: transformedX, y: transformedY };
+        }
       }
     };
 
@@ -847,12 +1727,28 @@ const DicomViewer: React.FC = () => {
         setCursorPosition(null);
       }
 
-      // Check if hovering over an annotation (works in all modes except erase)
+      // Check if hovering over an annotation (works in all modes except erase, only for selected window)
       if (mode !== 'erase') {
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (selectedWindow) {
+          const zoom = selectedWindow.zoomLevel;
+          const pan = selectedWindow.panOffset;
+          const parent = overlay.parentElement;
+          const containerWidth = parent?.clientWidth || 400;
+          const containerHeight = parent?.clientHeight || 400;
+          const centerX = containerWidth / 2;
+          const centerY = containerHeight / 2;
+          
+          // Transform mouse position to match annotation coordinate space
+          // Reverse the transformations: un-center, un-zoom, un-pan
+          const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+          const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+          
         let foundHover = false;
         annotations.forEach((a, idx) => {
-          const dx = p.x - a.x;
-          const dy = p.y - a.y;
+            if (a.windowId !== selectedWindowId) return; // Only check annotations for selected window
+            const dx = transformedX - a.x;
+            const dy = transformedY - a.y;
           const distance = Math.sqrt(dx*dx + dy*dy);
           if (distance <= 8) {
             setHoveredAnnotation(idx);
@@ -861,41 +1757,95 @@ const DicomViewer: React.FC = () => {
         });
         if (!foundHover && hoveredAnnotation !== null) {
           setHoveredAnnotation(null);
+          }
         }
       }
 
       if (!drawingRef.current) return;
 
       if (mode === 'measure'){
-        // live preview: redraw overlays by calling renderSlice (which clears overlays) then draw line
-        renderSlice();
+        // live preview: redraw overlays by calling renderAllViews (which redraws existing measurements with transformations)
+        renderAllViews();
         const octx = overlay.getContext('2d');
         if (!octx) return;
+        
+        // Get the selected window's zoom and pan
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (!selectedWindow) return;
+        const zoom = selectedWindow.zoomLevel;
+        const pan = selectedWindow.panOffset;
+        
         const dpr = window.devicePixelRatio || 1;
-        octx.setTransform(dpr,0,0,dpr,0,0);
+        const parent = overlay.parentElement;
+        const containerWidth = parent?.clientWidth || 400;
+        const containerHeight = parent?.clientHeight || 400;
+        
+        // Apply the same transformations as the main canvas
+        const centerX = containerWidth / 2;
+        const centerY = containerHeight / 2;
+        
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.scale(dpr, dpr);
+        octx.translate(pan.x, pan.y);
+        octx.translate(centerX, centerY);
+        octx.scale(zoom, zoom);
+        octx.translate(-centerX, -centerY);
+        
+        // Transform current mouse position to image space
+        const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+        const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+        
+        // Draw preview line (in image space coordinates)
         octx.beginPath();
         octx.moveTo(drawingRef.current.x, drawingRef.current.y);
-        octx.lineTo(p.x, p.y);
+        octx.lineTo(transformedX, transformedY);
         octx.strokeStyle = '#00FF00';
-        octx.lineWidth = 2;
+        octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
-        const dx = p.x - drawingRef.current.x;
-        const dy = p.y - drawingRef.current.y;
+        
+        const dx = transformedX - drawingRef.current.x;
+        const dy = transformedY - drawingRef.current.y;
         octx.fillStyle = '#00FF00';
-        octx.font = '12px system-ui';
-        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + p.x)/2 + 5, (drawingRef.current.y + p.y)/2 - 5);
+        octx.font = `${12 / zoom}px system-ui`; // Keep font size constant
+        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + transformedX)/2 + 5 / zoom, (drawingRef.current.y + transformedY)/2 - 5 / zoom);
       } else if (mode === 'annotate'){
-        renderSlice();
+        renderAllViews();
         const octx = overlay.getContext('2d');
         if (!octx) return;
+        
+        // Get the selected window's zoom and pan
+        const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+        if (!selectedWindow) return;
+        const zoom = selectedWindow.zoomLevel;
+        const pan = selectedWindow.panOffset;
+        
         const dpr = window.devicePixelRatio || 1;
-        octx.setTransform(dpr,0,0,dpr,0,0);
+        const parent = overlay.parentElement;
+        const containerWidth = parent?.clientWidth || 400;
+        const containerHeight = parent?.clientHeight || 400;
+        
+        // Apply the same transformations as the main canvas
+        const centerX = containerWidth / 2;
+        const centerY = containerHeight / 2;
+        
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.scale(dpr, dpr);
+        octx.translate(pan.x, pan.y);
+        octx.translate(centerX, centerY);
+        octx.scale(zoom, zoom);
+        octx.translate(-centerX, -centerY);
+        
+        // Transform current mouse position to image space
+        const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+        const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
+        
+        // Draw preview circle (in image space coordinates)
         octx.beginPath();
-        octx.arc(p.x, p.y, 8, 0, Math.PI*2);
-        octx.fillStyle = '#FFAA00';
+        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2); // Keep circle size constant
+        octx.fillStyle = '#FF8C00'; // Orange
         octx.fill();
         octx.strokeStyle = '#fff';
-        octx.lineWidth = 2;
+        octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
       }
     };
@@ -904,25 +1854,39 @@ const DicomViewer: React.FC = () => {
       const ref = drawingRef.current;
       if (!ref) return;
       const p = toLocal(ev);
+      
+      // Transform mouse coordinates to image space
+      const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+      if (!selectedWindow) return;
+      
+      const zoom = selectedWindow.zoomLevel;
+      const pan = selectedWindow.panOffset;
+      const parent = overlay.parentElement;
+      const containerWidth = parent?.clientWidth || 400;
+      const containerHeight = parent?.clientHeight || 400;
+      const centerX = containerWidth / 2;
+      const centerY = containerHeight / 2;
+      
+      const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
+      const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
 
       if (mode === 'measure') {
         setMeasurements(ms => [
           ...ms,
-          { x1: ref.x, y1: ref.y, x2: p.x, y2: p.y },
+          { x1: ref.x, y1: ref.y, x2: transformedX, y2: transformedY, windowId: selectedWindowId },
         ]);
       } else if (mode === 'annotate') {
-        // Generate random color for the annotation
-        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
-        const color = colors[Math.floor(Math.random() * colors.length)];
+        // Always use orange color for annotations
+        const color = '#FF8C00'; // Orange
 
-        // Show modal instead of browser prompt
-        setPendingAnnotation({ x: p.x, y: p.y, color });
+        // Show modal for annotation text
+        setPendingAnnotation({ x: transformedX, y: transformedY, color });
         setAnnotationText('');
         setShowAnnotationModal(true);
       }
 
       drawingRef.current = null;
-      renderSlice();
+      renderAllViews();
     };
 
     const onLeave = () => {
@@ -940,43 +1904,65 @@ const DicomViewer: React.FC = () => {
       overlay.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [mode, measurements, annotations, hoveredAnnotation]);
+  }, [mode, measurements, annotations, hoveredAnnotation, selectedWindowId, dynamicWindows]);
 
-  // Interaction mode handlers (scroll, zoom, pan)
+  // Set cursor based on active mode
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    // Set custom cursors for each mode
+    if (mode === 'measure') {
+      wrapper.style.cursor = 'crosshair';
+    } else if (mode === 'annotate') {
+      wrapper.style.cursor = 'cell'; // Plus sign cursor for placing annotations
+    } else if (mode === 'erase') {
+      wrapper.style.cursor = 'not-allowed'; // X/delete cursor
+    } else if (interactionMode === 'pan') {
+      wrapper.style.cursor = 'grab';
+    } else {
+      wrapper.style.cursor = 'default';
+    }
+  }, [mode, interactionMode]);
+
+  // Interaction mode handlers (scroll, zoom, pan) - now affects only selected window
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper || !hasImage) return;
+
+    const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!selectedWindow) return;
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
       if (interactionMode === 'scroll') {
-        // Scroll through slices
-        if (e.deltaY < 0 && currentSlice > 0) {
-          setCurrentSlice(s => s - 1);
-        } else if (e.deltaY > 0 && currentSlice < maxSlices) {
-          setCurrentSlice(s => s + 1);
-        }
+        // Scroll through slices in selected window only - use functional update
+        setDynamicWindows(prev => prev.map(w => {
+          if (w.id !== selectedWindowId) return w;
+          
+          const view = w.view;
+          let maxSlice = 0;
+          if (view === 'axial') maxSlice = dimensions[2] - 1;
+          else if (view === 'coronal') maxSlice = dimensions[1] - 1;
+          else if (view === 'sagittal') maxSlice = dimensions[0] - 1;
+
+          const newSlice = e.deltaY < 0 
+            ? Math.max(0, w.slice - 1)
+            : Math.min(maxSlice, w.slice + 1);
+          
+          return { ...w, slice: newSlice };
+        }));
       } else if (interactionMode === 'zoom') {
-        // Zoom in/out
+        // Zoom in/out in selected window only - use functional update
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        setZoomLevel(z => Math.max(0.5, Math.min(5, z + delta)));
+        setDynamicWindows(prev => prev.map(w =>
+          w.id === selectedWindowId
+            ? { ...w, zoomLevel: Math.max(0.5, Math.min(5, w.zoomLevel + delta)) }
+            : w
+        ));
       }
     };
-
-    useEffect(() => {
-      return () => {
-        viewerWindows.forEach(window => {
-          if (window.nv) {
-            try{
-              window.nv.destroy();
-            } catch(e) {
-              console.error('Error destroying viewer:', e);
-            }
-          }
-        })
-      }
-    })
 
     const handleMouseDown = (e: MouseEvent) => {
       if (interactionMode === 'pan' || interactionMode === 'brightness' || interactionMode === 'contrast') {
@@ -990,19 +1976,37 @@ const DicomViewer: React.FC = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isPanning.current) {
-        if (interactionMode === 'pan') {
           const dx = e.clientX - lastPanPos.current.x;
           const dy = e.clientY - lastPanPos.current.y;
-          setPanOffset(offset => ({ x: offset.x + dx, y: offset.y + dy }));
           lastPanPos.current = { x: e.clientX, y: e.clientY };
+        
+        if (interactionMode === 'pan') {
+          // Pan in selected window only - use functional update to get current state
+          setDynamicWindows(prev => prev.map(w => 
+            w.id === selectedWindowId 
+              ? { 
+                  ...w, 
+                  panOffset: { 
+                    x: w.panOffset.x + dx, 
+                    y: w.panOffset.y + dy 
+                  } 
+                }
+              : w
+          ));
         } else if (interactionMode === 'brightness') {
-          const dy = e.clientY - lastPanPos.current.y;
-          setWindowLevel(level => Math.max(-1000, Math.min(1000, level - dy * 2)));
-          lastPanPos.current = { x: e.clientX, y: e.clientY };
+          // Adjust brightness in selected window only - use functional update
+          setDynamicWindows(prev => prev.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, windowLevel: Math.max(-1000, Math.min(1000, w.windowLevel - dy * 2)) }
+              : w
+          ));
         } else if (interactionMode === 'contrast') {
-          const dy = e.clientY - lastPanPos.current.y;
-          setWindowWidth(width => Math.max(100, Math.min(2000, width - dy * 2)));
-          lastPanPos.current = { x: e.clientX, y: e.clientY };
+          // Adjust contrast in selected window only - use functional update
+          setDynamicWindows(prev => prev.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, windowWidth: Math.max(100, Math.min(2000, w.windowWidth - dy * 2)) }
+              : w
+          ));
         }
       }
     };
@@ -1030,28 +2034,35 @@ const DicomViewer: React.FC = () => {
       wrapper.removeEventListener('mouseup', handleMouseUp);
       wrapper.removeEventListener('mouseleave', handleMouseUp);
     };
-  }, [interactionMode, hasImage, currentSlice, maxSlices]);
-
-  const switchView = (view: 'axial'|'coronal'|'sagittal') => {
-    setCurrentView(view);
-    if (view === 'axial') setMaxSlices(dimensions[2] - 1);
-    else if (view === 'coronal') setMaxSlices(dimensions[1] - 1);
-    else setMaxSlices(dimensions[0] - 1);
-    setCurrentSlice(Math.floor((view === 'axial' ? dimensions[2] : view === 'coronal' ? dimensions[1] : dimensions[0]) / 2));
-  };
+  }, [interactionMode, hasImage, selectedWindowId, dynamicWindows, dimensions]);
 
   const resetView = () => {
+    // Reset global UI states
     setFlipH(false);
     setFlipV(false);
     setMeasurements([]);
     setAnnotations([]);
     setMode('none');
-    setZoomLevel(1);
-    setPanOffset({ x: 0, y: 0 });
     setInteractionMode(null);
-    setWindowLevel(224);
-    setWindowWidth(600);
     setHoveredAnnotation(null);
+    
+    // Reset the selected window's state
+    const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (selectedWindow) {
+      const view = selectedWindow.view;
+      let defaultSlice = 0;
+      if (view === 'axial') defaultSlice = Math.floor(dimensions[2] / 2);
+      else if (view === 'coronal') defaultSlice = Math.floor(dimensions[1] / 2);
+      else if (view === 'sagittal') defaultSlice = Math.floor(dimensions[0] / 2);
+      
+      updateWindowState(selectedWindowId, {
+        slice: defaultSlice,
+        zoomLevel: 1,
+        panOffset: { x: 0, y: 0 },
+        windowLevel: 200,
+        windowWidth: 600
+      });
+    }
   };
 
   // Handle annotation modal
@@ -1061,7 +2072,8 @@ const DicomViewer: React.FC = () => {
         x: pendingAnnotation.x,
         y: pendingAnnotation.y,
         text: annotationText.trim(),
-        color: pendingAnnotation.color
+        color: pendingAnnotation.color,
+        windowId: selectedWindowId
       }]);
     }
     setShowAnnotationModal(false);
@@ -1075,8 +2087,153 @@ const DicomViewer: React.FC = () => {
     setAnnotationText('');
   };
 
+  // State for prediction mask and overlay visibility
+  //const [predictionMask, setPredictionMask] = useState<Float32Array | null>(null);
+  //const [showOverlay, setShowOverlay] = useState(false);
+
   return (
     <div className="viewer-container">
+      {/* Success Modal for Prediction */}
+      {showSuccessModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1001,
+          }}
+          onClick={() => setShowSuccessModal(false)}
+        >
+          <div
+            style={{
+              background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.98) 0%, rgba(15, 23, 42, 0.98) 100%)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              borderRadius: '16px',
+              padding: '32px',
+              minWidth: '500px',
+              maxWidth: '600px',
+              boxShadow: '0 20px 60px 0 rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(34, 197, 94, 0.1)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Success Icon */}
+            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <div style={{
+                width: '80px',
+                height: '80px',
+                margin: '0 auto',
+                background: 'rgba(34, 197, 94, 0.1)',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '3px solid rgba(34, 197, 94, 0.3)',
+              }}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgb(34, 197, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              </div>
+            </div>
+
+            <h3 style={{
+              color: '#fff',
+              fontSize: '24px',
+              fontWeight: 600,
+              marginBottom: '12px',
+              textAlign: 'center',
+            }}>
+              Segmentation Complete!
+            </h3>
+            
+            <p style={{
+              color: 'rgba(255, 255, 255, 0.7)',
+              fontSize: '14px',
+              marginBottom: '24px',
+              textAlign: 'center',
+              lineHeight: '1.6',
+            }}>
+              Brain tumor segmentation has been successfully completed using the <strong style={{ color: 'rgb(59, 130, 246)' }}>{selectedModel.toUpperCase()}</strong> model. You can now toggle the overlay to view the results.
+            </p>
+
+            {/* Summary Statistics */}
+            {segmentationSummary && (
+              <div style={{
+                background: 'rgba(0, 0, 0, 0.3)',
+                borderRadius: '8px',
+                padding: '16px',
+                marginBottom: '24px',
+              }}>
+                <h4 style={{ color: '#fff', fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>
+                  Segmentation Summary
+                </h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13px' }}>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Total Tumor Voxels:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.total_tumor_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Necrotic Core:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.necrotic_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Edema:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.edema_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Enhancing Tumor:</span>
+                    <div style={{ color: '#fff', fontWeight: 600, marginTop: '4px' }}>
+                      {segmentationSummary.enhancing_voxels?.toLocaleString() || 'N/A'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowSuccessModal(false)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'rgba(34, 197, 94, 0.2)',
+                border: '1px solid rgba(34, 197, 94, 0.4)',
+                borderRadius: '8px',
+                color: 'rgb(34, 197, 94)',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(34, 197, 94, 0.3)';
+                e.currentTarget.style.borderColor = 'rgba(34, 197, 94, 0.6)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(34, 197, 94, 0.2)';
+                e.currentTarget.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Annotation Modal */}
       {showAnnotationModal && (
         <div
@@ -1253,45 +2410,308 @@ const DicomViewer: React.FC = () => {
       <div className="viewer-main">
         <div className="viewer-header">
           <div>Series: Axial Series 1 of 1</div>
-          <div>Image: {hasImage ? `${currentSlice + 1} of ${maxSlices + 1}` : '—'}</div>
+          <div>
+            {hasImage ? (() => {
+              const selectedWindow = dynamicWindows.find(w => w.id === selectedWindowId);
+              if (!selectedWindow) return '—';
+              
+              // Calculate max slices based on selected window's view
+              let maxSliceForView = 0;
+              if (selectedWindow.view === 'axial') maxSliceForView = dimensions[2] - 1;
+              else if (selectedWindow.view === 'coronal') maxSliceForView = dimensions[1] - 1;
+              else if (selectedWindow.view === 'sagittal') maxSliceForView = dimensions[0] - 1;
+              else return '—'; // 3D view has no slices
+              
+              return `Image: ${selectedWindow.slice + 1} of ${maxSliceForView + 1}`;
+            })() : 'Image: —'}
+          </div>
         </div>
 
         <div className="viewer-screen" ref={wrapperRef} style={{ position: 'relative' }}>
-          {!hasImage && (
-            <div className="empty-overlay">
-              <div className="empty-box">
-                <h3>No Image Loaded</h3>
-                <p>Upload a .nii file to begin viewing</p>
-              </div>
-            </div>
-          )}
+          {/* Dynamic grid layout */}
+          <div style={{
+            display: 'grid',
+            width: '100%',
+            height: '100%',
+            gap: '2px',
+            gridTemplateColumns: dynamicWindows.length === 1 ? '1fr' :
+                                 dynamicWindows.length === 2 ? '1fr 1fr' :
+                                 dynamicWindows.length === 3 ? '1fr 1fr' :
+                                 '1fr 1fr',
+            gridTemplateRows: dynamicWindows.length === 1 ? '1fr' :
+                             dynamicWindows.length === 2 ? '1fr' :
+                             dynamicWindows.length === 3 ? '1fr 1fr' :
+                             '1fr 1fr'
+          }}>
+            {dynamicWindows.map((window, idx) => (
+              <div 
+                key={window.id} 
+                className="viewer-cell"
+                onClick={() => setSelectedWindowId(window.id)}
+                style={{
+                  gridColumn: dynamicWindows.length === 3 && idx === 0 ? 'span 2' : 'auto',
+                  border: selectedWindowId === window.id 
+                    ? '3px solid rgba(59, 130, 246, 0.8)' 
+                    : '1px solid #2a2f3d',
+                  boxShadow: selectedWindowId === window.id
+                    ? '0 0 20px rgba(59, 130, 246, 0.5)'
+                    : 'none',
+                  cursor: mode === 'measure' ? 'crosshair' :
+                         mode === 'annotate' ? 'cell' :
+                         mode === 'erase' ? 'not-allowed' :
+                         interactionMode === 'pan' ? 'grab' :
+                         'default', // Don't use 'pointer' - let measurement modes take precedence
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {/* Window controls */}
+                <div style={{
+                  position: 'absolute',
+                  top: 8,
+                  left: 8,
+                  right: 8,
+                  zIndex: 10,
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  {/* View dropdown */}
+                  <select
+                    value={window.view}
+                    onChange={(e) => changeWindowView(window.id, e.target.value as ViewType)}
+                    style={{
+                      background: 'rgba(30, 41, 59, 0.9)',
+                      backdropFilter: 'blur(8px)',
+                      WebkitBackdropFilter: 'blur(8px)',
+                      color: '#e2e8f0',
+                      border: '1px solid rgba(59, 130, 246, 0.3)',
+                      borderRadius: 6,
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      outline: 'none',
+                      transition: 'all 0.2s ease',
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.6)';
+                      e.currentTarget.style.background = 'rgba(30, 41, 59, 0.95)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+                      e.currentTarget.style.background = 'rgba(30, 41, 59, 0.9)';
+                    }}
+                  >
+                    <option value="axial">Axial</option>
+                    <option value="coronal">Coronal</option>
+                    <option value="sagittal">Sagittal</option>
+                    <option value="3d">3D Render</option>
+                  </select>
 
-          {hasImage && (
-            <div style={{
-              position: 'absolute',
+                  {/* Prediction controls - center area */}
+                  {window.mriId && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {/* Model selector */}
+                      <select
+                        value={window.selectedModel}
+                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' })}
+                        disabled={window.isPredicting}
+                        style={{
+                          background: 'rgba(30, 41, 59, 0.9)',
+                          backdropFilter: 'blur(8px)',
+                          WebkitBackdropFilter: 'blur(8px)',
+                          color: '#e2e8f0',
+                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          borderRadius: 6,
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
+                          outline: 'none',
+                          opacity: window.isPredicting ? 0.5 : 1,
+                        }}
+                      >
+                        <option value="pspnet">PSPNet</option>
+                        <option value="unet">U-Net</option>
+                      </select>
+
+                      {/* Run Prediction button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          runWindowPrediction(window.id);
+                        }}
+                        disabled={window.isPredicting}
+                        style={{
+                          background: window.isPredicting 
+                            ? 'rgba(107, 114, 128, 0.2)' 
+                            : 'rgba(139, 92, 246, 0.2)',
+                          backdropFilter: 'blur(8px)',
+                          WebkitBackdropFilter: 'blur(8px)',
+                          border: window.isPredicting 
+                            ? '1px solid rgba(107, 114, 128, 0.4)' 
+                            : '1px solid rgba(139, 92, 246, 0.4)',
+                          borderRadius: 6,
+                          color: window.isPredicting ? '#9ca3af' : '#c4b5fd',
+                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
+                          padding: '4px 12px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          transition: 'all 0.2s ease',
+                        }}
+                      >
+                        {window.isPredicting ? (
+                          <>
+                            <span className="spinner" style={{
+                              width: 12,
+                              height: 12,
+                              border: '2px solid rgba(156, 163, 175, 0.3)',
+                              borderTop: '2px solid #9ca3af',
+                              borderRadius: '50%',
+                              animation: 'spin 1s linear infinite',
+                            }} />
+                            Running...
+                          </>
+                        ) : (
+                          '▶ Predict'
+                        )}
+                      </button>
+
+                      {/* Show Overlay toggle */}
+                      {window.segmentationData && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateWindowState(window.id, { showOverlay: !window.showOverlay });
+                          }}
+                          style={{
+                            background: window.showOverlay 
+                              ? 'rgba(34, 197, 94, 0.2)' 
+                              : 'rgba(148, 163, 184, 0.2)',
+                            backdropFilter: 'blur(8px)',
+                            WebkitBackdropFilter: 'blur(8px)',
+                            border: window.showOverlay 
+                              ? '1px solid rgba(34, 197, 94, 0.4)' 
+                              : '1px solid rgba(148, 163, 184, 0.4)',
+                            borderRadius: 6,
+                            color: window.showOverlay ? '#86efac' : '#cbd5e1',
+                            cursor: 'pointer',
+                            padding: '4px 12px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            transition: 'all 0.2s ease',
+                          }}
+                        >
+                          {window.showOverlay ? '👁️ Hide' : '👁️ Show'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Delete button */}
+                  {dynamicWindows.length > 1 && (
+                    <button
+                      onClick={() => removeWindow(window.id)}
+                      title="Close window"
+                      style={{
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        border: '1px solid rgba(239, 68, 68, 0.4)',
+                        borderRadius: 6,
+                        color: '#ef4444',
+                        cursor: 'pointer',
+                        padding: '4px 8px',
+                        fontSize: 14,
+                        fontWeight: 600,
+                        lineHeight: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.2s ease',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.3)';
+                        e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.6)';
+                        e.currentTarget.style.color = '#fca5a5';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+                        e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                        e.currentTarget.style.color = '#ef4444';
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Window content - separate canvases for 2D vs 3D to avoid context conflicts */}
+         {!hasImage ? (
+        <div className="empty-overlay">
+          <div className="empty-box">
+            <h3>No Image Loaded</h3>
+            <p>Upload a .nii file to begin viewing</p>
+          </div>
+        </div>
+                ) : window.view === '3d' ? (
+          <canvas
+                    key={`3d-${window.id}`} // Force remount when switching to 3D
+                    ref={el => { 
+                      if (el) {
+                        canvasRefs.current[idx] = el;
+                      }
+                    }}
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
+                      pointerEvents: 'auto', // Enable interaction for 3D
+            }}
+          />
+      ) : (
+        <>
+          <canvas
+                      key={`2d-${window.id}`} // Force remount when switching to 2D
+                      ref={el => { 
+                        if (el) {
+                          canvasRefs.current[idx] = el;
+                        }
+                      }}
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
+                        pointerEvents: 'none',
+            }}
+          />
+                    {/* Overlay canvas for measurements and annotations */}
+          <canvas
+                      ref={el => {
+                        if (el) {
+                          overlayRefs.current[idx] = el;
+                        }
+                      }}
+            style={{
+                        position: 'absolute',
               top: 0,
               left: 0,
-              width: '100%',
-              height: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <div style={{ position: 'relative', display: 'inline-block' }}>
-                <canvas ref={canvasRef} style={{
-                  display: 'block',
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                }} />
-                <canvas ref={overlayRef} style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  pointerEvents: 'auto',
-                }} />
-              </div>
-            </div>
-          )}
+                        width: '100%',
+                        height: '100%',
+                        pointerEvents: mode !== 'none' ? 'auto' : 'none', // Enable clicks when measurement mode active
+            }}
+          />
+        </>
+      )}
+    </div>
+  ))}
+</div>
 
           <span className="orientation top">A</span>
           <span className="orientation left">R</span>
@@ -1299,7 +2719,7 @@ const DicomViewer: React.FC = () => {
         </div>
       </div>
 
-      <div className="viewer-sidebar" style={{ padding: 0 }}>
+      <div className="viewer-sidebar" style={{ padding: 0, overflowY: 'auto', height: '100vh' }}>
           <div style={{ width: '100%' }}>
           <div className="sidebar-title" style={{
             padding: '24px 20px',
@@ -1359,126 +2779,15 @@ const DicomViewer: React.FC = () => {
               </button>
             {expandedSections.view && (
               <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Views Section */}
-                <div>
-                  <div style={{
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    marginBottom: '12px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}>
-                    Views
-                  </div>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr',
-                    gap: '8px'
-                  }}>
-                    <button
-                      className={`sidebar-btn ${currentView === 'axial' ? 'active' : ''}`}
-                      onClick={() => switchView('axial')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Axial
-                    </button>
-                    <button
-                      className={`sidebar-btn ${currentView === 'coronal' ? 'active' : ''}`}
-                      onClick={() => switchView('coronal')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Coronal
-                    </button>
-                    <button
-                      className={`sidebar-btn ${currentView === 'sagittal' ? 'active' : ''}`}
-                      onClick={() => switchView('sagittal')}
-                      style={{
-                        padding: '12px 8px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
-                    >
-                      Sagittal
-                    </button>
-                  </div>
-                </div>
+                {/* Views Section - Removed individual view buttons since we have dropdowns on each window */}
 
                 {/* Interaction Mode Icons */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '8px 0' }}>
                   {/* First Row: Scroll, Zoom, Pan */}
                   <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
-                    {/* Scroll/Stack Icon with slice counter */}
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
-                      {/* Tiny Slice Counter with +/- buttons */}
-                      {hasImage && (
-                        <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          height: '14px',
-                          marginBottom: '2px',
-                        }}>
-                          <button
-                            onClick={() => setCurrentSlice(Math.max(0, currentSlice - 1))}
-                            disabled={currentSlice === 0}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: currentSlice === 0 ? '#555' : '#94a3b8',
-                              cursor: currentSlice === 0 ? 'not-allowed' : 'pointer',
-                              fontSize: '10px',
-                              padding: '0',
-                              transition: 'color 0.2s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              if (currentSlice !== 0) e.currentTarget.style.color = '#3b82f6';
-                            }}
-                            onMouseLeave={(e) => {
-                              if (currentSlice !== 0) e.currentTarget.style.color = '#94a3b8';
-                            }}
-                          >
-                            −
-                          </button>
-                          <span style={{
-                            fontSize: '10px',
-                            color: '#94a3b8',
-                          }}>
-                            {currentSlice + 1}/{maxSlices + 1}
-                          </span>
-                          <button
-                            onClick={() => setCurrentSlice(Math.min(maxSlices, currentSlice + 1))}
-                            disabled={currentSlice === maxSlices}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: currentSlice === maxSlices ? '#555' : '#94a3b8',
-                              cursor: currentSlice === maxSlices ? 'not-allowed' : 'pointer',
-                              fontSize: '10px',
-                              padding: '0',
-                              transition: 'color 0.2s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              if (currentSlice !== maxSlices) e.currentTarget.style.color = '#3b82f6';
-                            }}
-                            onMouseLeave={(e) => {
-                              if (currentSlice !== maxSlices) e.currentTarget.style.color = '#94a3b8';
-                            }}
-                          >
-                            +
-                          </button>
-                        </div>
-                      )}
-                      {!hasImage && <div style={{ height: '14px', marginBottom: '2px' }} />}
-
+                    {/* Scroll/Stack Icon */}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <div style={{ height: '14px', marginBottom: '2px' }} />
               <button
                         onClick={() => activateInteractionMode(interactionMode === 'scroll' ? null : 'scroll')}
                         title="Scroll through slices"
@@ -1784,14 +3093,14 @@ const DicomViewer: React.FC = () => {
             )}
           </div>
 
-          {/* TRANSFORM Section */}
+          {/* WINDOWS Section */}
           <div style={{ marginBottom: '0px' }}>
                 <button
-              onClick={() => toggleSection('transform')}
+              onClick={() => toggleSection('windows')}
               style={{
                 width: '100%',
                 padding: '24px 16px',
-                background: expandedSections.transform
+                background: expandedSections.windows
                   ? 'rgba(51, 65, 85, 0.6)'
                   : 'rgba(51, 65, 85, 0.3)',
                 backdropFilter: 'blur(10px)',
@@ -1811,17 +3120,18 @@ const DicomViewer: React.FC = () => {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                {/* 3D Cube Icon */}
+                {/* Grid Icon */}
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                  <rect x="3" y="3" width="7" height="7"/>
+                  <rect x="14" y="3" width="7" height="7"/>
+                  <rect x="14" y="14" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/>
                 </svg>
-                <span>3D Options</span>
+                <span>Windows</span>
               </div>
-              <span style={{ fontSize: '18px' }}>{expandedSections.transform ? '▼' : '▶'}</span>
+              <span style={{ fontSize: '18px' }}>{expandedSections.windows ? '▼' : '▶'}</span>
             </button>
-            {expandedSections.transform && (
+            {expandedSections.windows && (
               <div style={{ padding: '16px' }}>
                 <div style={{ marginBottom: '16px' }}>
                   <div style={{
@@ -1832,59 +3142,47 @@ const DicomViewer: React.FC = () => {
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px'
                   }}>
-                    Multi-Window Viewer
+                    Manage Windows
                   </div>
 
                   <button
                     className="sidebar-btn"
-                    onClick={createViewerWindow}
-                    disabled={viewerWindows.length >= 4}
+                    onClick={addWindow}
+                    disabled={dynamicWindows.length >= 4}
                     style={{
                         width: '100%',
                         marginBottom: '8px',
-                        opacity: viewerWindows.length >= 4 ? 0.5 : 1,
-                        cursor: viewerWindows.length >= 4 ?'not-allowed' : 'pointer',
+                        opacity: dynamicWindows.length >= 4 ? 0.5 : 1,
+                        cursor: dynamicWindows.length >= 4 ?'not-allowed' : 'pointer',
                     }}
                   >
-                    + New Viewer Window ({viewerWindows.length}/4)
+                    + Add Window ({dynamicWindows.length}/4)
                   </button>
 
-                  {viewerWindows.length > 0 && (
-                    <button
-                      className="sidebar-btn"
-                      onClick={() => setViewerWindows([])}
-                      style={{
-                        width: '100%',
-                        background: 'rgba(239, 68, 68, 0.5)',
-                        border: '1px solid rgba(239, 68, 68, 0.5)',
-                      }}
-                    >
-                      Close All Windows
-                    </button>
-                  )}
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '12px', marginBottom: '4px' }}>
+                    Active windows: {dynamicWindows.length}
                 </div>
 
-                {/* 2D Transforms - keeping your original buttons */}
-                <div>
                   <div style={{
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    marginBottom: '12px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
+                    fontSize: '12px', 
+                    color: '#3b82f6', 
+                    marginTop: '4px',
+                    padding: '8px',
+                    background: 'rgba(59, 130, 246, 0.1)',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(59, 130, 246, 0.3)'
                   }}>
-                    2D Transforms
-                  </div>
-                  <div className="sidebar-buttons">
-                    <button className="sidebar-btn" onClick={() => setFlipH(f => !f)}>Flip H</button>
-                    <button className="sidebar-btn" onClick={() => setFlipV(f => !f)}>Flip V</button>
-                    <button className="sidebar-btn" onClick={() => resetView()}>Reset</button>
+                    Selected: Window {selectedWindowId}
+                    {dynamicWindows.find(w => w.id === selectedWindowId) && 
+                      ` (${dynamicWindows.find(w => w.id === selectedWindowId)!.view.charAt(0).toUpperCase() + 
+                        dynamicWindows.find(w => w.id === selectedWindowId)!.view.slice(1)})`
+                    }
                   </div>
                 </div>
               </div>
             )}
           </div>
+
 
           {/* UPLOAD Section */}
           <div style={{ marginBottom: '0px' }}>
@@ -1924,12 +3222,140 @@ const DicomViewer: React.FC = () => {
               <span style={{ fontSize: '18px' }}>{expandedSections.upload ? '▼' : '▶'}</span>
                 </button>
             {expandedSections.upload && (
-              <div style={{ padding: '12px' }}>
-                <input id="niftiUpload" type="file" accept=".nii,.nii.gz" className="upload-box" />
-              </div>
-            )}
-        </div>
+  <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+    <input id="niftiUpload" type="file" accept=".nii,.nii.gz" multiple className="upload-box" />
 
+    {/* Model Selector */}
+    <div style={{
+      background: 'rgba(51, 65, 85, 0.4)',
+      borderRadius: '8px',
+      padding: '12px',
+      border: '1px solid rgba(148, 163, 184, 0.2)',
+    }}>
+      <label style={{
+        color: 'rgba(255, 255, 255, 0.8)',
+        fontSize: '13px',
+        fontWeight: 600,
+        marginBottom: '8px',
+        display: 'block',
+      }}>
+        Segmentation Model
+      </label>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <button
+          onClick={() => setSelectedModel('unet')}
+          disabled={isPredicting}
+          style={{
+            flex: 1,
+            padding: '10px',
+            background: selectedModel === 'unet' ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
+            border: selectedModel === 'unet' ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(148, 163, 184, 0.2)',
+            borderRadius: '6px',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: selectedModel === 'unet' ? 600 : 500,
+            cursor: isPredicting ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          U-Net
+        </button>
+        <button
+          onClick={() => setSelectedModel('pspnet')}
+          disabled={isPredicting}
+          style={{
+            flex: 1,
+            padding: '10px',
+            background: selectedModel === 'pspnet' ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
+            border: selectedModel === 'pspnet' ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(148, 163, 184, 0.2)',
+            borderRadius: '6px',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: selectedModel === 'pspnet' ? 600 : 500,
+            cursor: isPredicting ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          PSPNet
+        </button>
+      </div>
+    </div>
+
+    {/* Predict Button */}
+    <button
+      onClick={handlePrediction}
+      disabled={!niftiData || !mriId || isPredicting}
+      style={{
+        background: isPredicting 
+          ? 'rgba(100, 116, 139, 0.4)' 
+          : 'rgba(59,130,246,0.6)',
+        border: `1px solid ${isPredicting ? 'rgba(100, 116, 139, 0.5)' : 'rgba(59,130,246,0.7)'}`,
+        borderRadius: '6px',
+        color: '#fff',
+        padding: '12px',
+        fontWeight: 600,
+        cursor: (!niftiData || !mriId || isPredicting) ? 'not-allowed' : 'pointer',
+        opacity: (!niftiData || !mriId || isPredicting) ? 0.5 : 1,
+        transition: 'all 0.2s ease',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+      }}
+      title={!mriId ? "Backend not available - prediction features require backend server" : ""}
+    >
+      {isPredicting ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              border: '3px solid rgba(255,255,255,0.3)',
+              borderTop: '3px solid #fff',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+            }} />
+            Running...
+          </div>
+          <div style={{ fontSize: '11px', opacity: 0.8, textAlign: 'center' }}>
+            {predictionProgress}
+          </div>
+        </>
+      ) : (
+        'Run Prediction'
+      )}
+    </button>
+    
+    <style>{`
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    `}</style>
+
+    {/* Overlay Toggle */}
+    <button
+      onClick={() => setShowOverlay(o => !o)}
+      disabled={!predictionMask}
+      style={{
+        background: showOverlay ? 'rgba(34,197,94,0.6)' : 'rgba(51,65,85,0.6)',
+        border: showOverlay ? '1px solid rgba(34,197,94,0.8)' : '1px solid rgba(148,163,184,0.3)',
+        borderRadius: '6px',
+        color: '#fff',
+        padding: '10px',
+        fontWeight: 600,
+        cursor: predictionMask ? 'pointer' : 'not-allowed',
+        opacity: predictionMask ? 1 : 0.5,
+        transition: 'all 0.2s ease',
+      }}
+    >
+      {showOverlay ? 'Hide Overlay' : 'Show Overlay'}
+    </button>
+        </div>
+)}
+
+        </div>
       </div>
       </div>
 
@@ -1995,4 +3421,3 @@ const DicomViewer: React.FC = () => {
 };
 
 export default DicomViewer;
-
