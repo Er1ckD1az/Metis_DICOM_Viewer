@@ -130,9 +130,9 @@ const DicomViewer: React.FC = () => {
 
   // Accordion state for collapsible sections
   const [expandedSections, setExpandedSections] = useState<{[key: string]: boolean}>({
-    view: true,
+    view: false,
     tools: false,
-    windows: true,
+    windows: false,
     transform: false,
     upload: false,
   });
