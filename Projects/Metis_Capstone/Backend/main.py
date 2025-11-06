@@ -75,27 +75,50 @@ class SegmentationResponse(BaseModel):
     summary: dict  # Statistics about the segmentation
 
 
-# Global model instance (loaded once)
-segmentation_model = None
+# Global model instances (pre-loaded at startup for faster predictions)
+pspnet_model = None
+unet_model = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global segmentation_model
+    global pspnet_model, unet_model
 
     # Initialize database
     init_database()
 
-    # Load segmentation model from S3
-    model_path = os.getenv('MODEL_CHECKPOINT_PATH')
-    if model_path:
-        print(f"\nLoading segmentation model from: {model_path}")
+    # Pre-load BOTH segmentation models from S3
+    print("\n" + "="*60)
+    print("🚀 PRE-LOADING SEGMENTATION MODELS...")
+    print("="*60)
+    
+    # Load PSPNet model
+    pspnet_path = os.getenv('MODEL_CHECKPOINT_PATH')
+    if pspnet_path:
+        print(f"\n📦 Loading PSPNet model from: {pspnet_path}")
         try:
-            segmentation_model = BraTSSegmentationModel(model_path)
-            print("Segmentation model loaded successfully\n")
+            pspnet_model = BraTSSegmentationModel(pspnet_path, model_type='pspnet')
+            print("✅ PSPNet model loaded successfully!")
         except Exception as e:
-            print(f"Failed to load segmentation model: {e}")
-            print("Segmentation endpoints will not be available\n")
+            print(f"❌ Failed to load PSPNet model: {e}")
+            print("PSPNet predictions will not be available")
+    
+    # Load U-Net model
+    unet_path = os.getenv('UNET_MODEL_PATH')
+    if unet_path:
+        print(f"\n📦 Loading U-Net model from: {unet_path}")
+        try:
+            unet_model = BraTSSegmentationModel(unet_path, model_type='unet')
+            print("✅ U-Net model loaded successfully!")
+        except Exception as e:
+            print(f"❌ Failed to load U-Net model: {e}")
+            print("U-Net predictions will not be available")
+    
+    print("\n" + "="*60)
+    print("🎉 MODEL PRE-LOADING COMPLETE!")
+    print(f"   PSPNet ready: {'✅' if pspnet_model else '❌'}")
+    print(f"   U-Net ready:  {'✅' if unet_model else '❌'}")
+    print("="*60 + "\n")
 
     yield
 
@@ -477,11 +500,21 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
     #Run segmentation on the MRI
     #This is called after detection, when user wants to predict
 
-    if segmentation_model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Segmentation model not loaded. Check MODEL_CHECKPOINT_PATH environment variable."
-        )
+    # Check if requested model is loaded
+    global pspnet_model, unet_model
+    
+    if model_type.lower() == "unet":
+        if unet_model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="U-Net model not loaded. Check UNET_MODEL_PATH environment variable."
+            )
+    else:  # pspnet
+        if pspnet_model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="PSPNet model not loaded. Check MODEL_CHECKPOINT_PATH environment variable."
+            )
 
     # Get MRI info
     conn = get_db_connection()
@@ -566,20 +599,18 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error loading volumes: {str(e)}")
 
-        # Load the appropriate model based on model_type
+        # Use the pre-loaded model based on model_type
         print(f"\n🧠 Running segmentation for MRI ID: {mri_id} using {model_type.upper()} model")
+        print(f"⚡ Using pre-loaded model (no download/loading required!)")
         
-        # Determine model path
+        # Select the pre-loaded model
         if model_type.lower() == "unet":
-            model_path = os.getenv('UNET_MODEL_PATH', 's3://dicom-mri-files/ModelPaths/unet_axial_best.pth')
+            selected_model = unet_model
         else:  # default to pspnet
-            model_path = os.getenv('MODEL_CHECKPOINT_PATH', 's3://dicom-mri-files/ModelPaths/axial_model_best.pth')
-        
-        print(f"Loading model from: {model_path}")
+            selected_model = pspnet_model
         
         try:
-            # Load the selected model with the appropriate architecture
-            selected_model = BraTSSegmentationModel(model_path, model_type=model_type)
+            # Run prediction with pre-loaded model
             prediction = selected_model.predict_volume(volume_dict)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
@@ -590,7 +621,7 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
 
         # Use the first modality file as reference for header/affine
         reference_path = downloaded_paths['flair']
-        segmentation_model.save_prediction(prediction, reference_path, str(seg_temp_path))
+        selected_model.save_prediction(prediction, reference_path, str(seg_temp_path))
 
         # Upload segmentation to S3
         with open(seg_temp_path, 'rb') as f:
