@@ -503,7 +503,14 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
     # Check if requested model is loaded
     global pspnet_model, unet_model
     
-    if model_type.lower() == "unet":
+    if model_type.lower() == "ensemble":
+        # Ensemble requires BOTH models
+        if pspnet_model is None or unet_model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Ensemble requires both PSPNet and U-Net models to be loaded."
+            )
+    elif model_type.lower() == "unet":
         if unet_model is None:
             raise HTTPException(
                 status_code=503,
@@ -599,21 +606,49 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error loading volumes: {str(e)}")
 
-        # Use the pre-loaded model based on model_type
-        print(f"\n🧠 Running segmentation for MRI ID: {mri_id} using {model_type.upper()} model")
-        print(f"⚡ Using pre-loaded model (no download/loading required!)")
+        # Use the pre-loaded model(s) based on model_type
+        if model_type.lower() == "ensemble":
+            # ENSEMBLE: Run both models and average their predictions
+            print(f"\n🧠 Running ENSEMBLE segmentation (PSPNet + U-Net)")
+            print(f"⚡ Using pre-loaded models (no download/loading required!)")
+            
+            try:
+                # Run PSPNet and get probabilities
+                print("  📊 Running PSPNet...")
+                pspnet_probs = pspnet_model.predict_volume_with_probabilities(volume_dict)
+                
+                # Run U-Net and get probabilities
+                print("  📊 Running U-Net...")
+                unet_probs = unet_model.predict_volume_with_probabilities(volume_dict)
+                
+                # Average the probabilities from both models
+                print("  🎯 Averaging predictions from both models...")
+                ensemble_probs = (pspnet_probs + unet_probs) / 2.0
+                
+                # Get final class predictions by taking argmax of averaged probabilities
+                prediction = np.argmax(ensemble_probs, axis=-1).astype(np.uint8)
+                
+                print("✅ Ensemble prediction complete!")
+                
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Ensemble segmentation failed: {str(e)}")
         
-        # Select the pre-loaded model
-        if model_type.lower() == "unet":
-            selected_model = unet_model
-        else:  # default to pspnet
-            selected_model = pspnet_model
-        
-        try:
-            # Run prediction with pre-loaded model
-            prediction = selected_model.predict_volume(volume_dict)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
+        else:
+            # SINGLE MODEL: Use either PSPNet or U-Net
+            print(f"\n🧠 Running segmentation for MRI ID: {mri_id} using {model_type.upper()} model")
+            print(f"⚡ Using pre-loaded model (no download/loading required!)")
+            
+            # Select the pre-loaded model
+            if model_type.lower() == "unet":
+                selected_model = unet_model
+            else:  # default to pspnet
+                selected_model = pspnet_model
+            
+            try:
+                # Run prediction with pre-loaded model
+                prediction = selected_model.predict_volume(volume_dict)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
 
         # Save segmentation result
         seg_filename = f"seg_{mri_id}_{file_name}"
@@ -621,7 +656,12 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
 
         # Use the first modality file as reference for header/affine
         reference_path = downloaded_paths['flair']
-        selected_model.save_prediction(prediction, reference_path, str(seg_temp_path))
+        
+        # Use any model to save (they both have the save_prediction method)
+        if model_type.lower() == "ensemble":
+            pspnet_model.save_prediction(prediction, reference_path, str(seg_temp_path))
+        else:
+            selected_model.save_prediction(prediction, reference_path, str(seg_temp_path))
 
         # Upload segmentation to S3
         with open(seg_temp_path, 'rb') as f:

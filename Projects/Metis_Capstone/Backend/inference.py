@@ -140,6 +140,20 @@ class BraTSSegmentationModel:
 
         return pred
 
+    def _predict_slice_probabilities(self, slice_2d):
+        #Predict class probabilities for a single 2D slice (for ensemble)
+        slice_tensor = torch.tensor(slice_2d, dtype=torch.float32).unsqueeze(0)
+        slice_tensor = slice_tensor.permute(0, 3, 1, 2).to(self.device)
+
+        with torch.no_grad():
+            output = self.model(slice_tensor)
+            # Convert logits to probabilities using softmax
+            probs = torch.softmax(output, dim=1)
+            # Shape: (1, 4, H, W) -> (H, W, 4)
+            probs = probs.squeeze(0).permute(1, 2, 0).cpu().numpy()
+
+        return probs
+
     def predict_volume(self, volume_data):       
         #Predict segmentation for entire 3D volume
         volume_shape = volume_data.shape
@@ -168,6 +182,34 @@ class BraTSSegmentationModel:
         self._print_prediction_summary(predictions)
 
         return predictions
+
+    def predict_volume_with_probabilities(self, volume_data):
+        #Predict segmentation and return class probabilities for ensemble
+        #Returns probabilities instead of final class predictions
+        volume_shape = volume_data.shape
+        # Initialize probability array: (H, W, D, 4 classes)
+        probabilities = np.zeros((*volume_shape[:3], 4), dtype=np.float32)
+
+        print(f"Predicting probabilities for volume shape: {volume_shape}")
+
+        # Process axial slices (z-dimension)
+        for z in tqdm(range(volume_shape[2]), desc="Processing slices"):
+            # Get slice with all 4 modalities: shape (H, W, 4)
+            slice_4d = volume_data[:, :, z, :]
+            
+            # Normalize each modality channel independently
+            normalized_slice = np.zeros_like(slice_4d)
+            for ch in range(4):
+                channel_data = slice_4d[:, :, ch]
+                mean_val = np.mean(channel_data)
+                std_val = np.std(channel_data)
+                normalized_slice[:, :, ch] = (channel_data - mean_val) / (std_val + 1e-6)
+                normalized_slice[:, :, ch] = np.nan_to_num(normalized_slice[:, :, ch])
+
+            # Get probabilities for this slice
+            probabilities[:, :, z, :] = self._predict_slice_probabilities(normalized_slice)
+
+        return probabilities
 
     def _print_prediction_summary(self, predictions):
         #Print summary statistics of predictions

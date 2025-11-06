@@ -58,7 +58,7 @@ const DicomViewer: React.FC = () => {
   const [predictionProgress, setPredictionProgress] = useState<string>('');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
-  const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
+  const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet' | 'ensemble'>('pspnet');
 
   // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
@@ -72,7 +72,7 @@ const DicomViewer: React.FC = () => {
     panOffset: { x: number; y: number };
     // Per-window prediction state
     mriId: number | null;
-    selectedModel: 'pspnet' | 'unet';
+    selectedModel: 'pspnet' | 'unet' | 'ensemble';
     segmentationData: Float32Array | null;
     segmentationDimensions: [number, number, number];
     showOverlay: boolean;
@@ -2516,7 +2516,7 @@ const DicomViewer: React.FC = () => {
                       {/* Model selector */}
                       <select
                         value={window.selectedModel}
-                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' })}
+                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' | 'ensemble' })}
                         disabled={window.isPredicting}
                         style={{
                           background: 'rgba(30, 41, 59, 0.9)',
@@ -2535,6 +2535,7 @@ const DicomViewer: React.FC = () => {
                       >
                         <option value="pspnet">PSPNet</option>
                         <option value="unet">U-Net</option>
+                        <option value="ensemble">🎯 Ensemble</option>
                       </select>
 
                       {/* Run Prediction button */}
