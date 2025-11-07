@@ -70,13 +70,6 @@ const DicomViewer: React.FC = () => {
     windowWidth: number;
     zoomLevel: number;
     panOffset: { x: number; y: number };
-    // Per-window prediction state
-    mriId: number | null;
-    selectedModel: 'pspnet' | 'unet';
-    segmentationData: Float32Array | null;
-    segmentationDimensions: [number, number, number];
-    showOverlay: boolean;
-    isPredicting: boolean;
   };
   
   const [dynamicWindows, setDynamicWindows] = useState<WindowState[]>([
@@ -87,13 +80,7 @@ const DicomViewer: React.FC = () => {
       windowLevel: 200,
       windowWidth: 600,
       zoomLevel: 1,
-      panOffset: { x: 0, y: 0 },
-      mriId: null,
-      selectedModel: 'pspnet',
-      segmentationData: null,
-      segmentationDimensions: [0, 0, 0],
-      showOverlay: false,
-      isPredicting: false
+      panOffset: { x: 0, y: 0 }
     }
   ]);
   const [selectedWindowId, setSelectedWindowId] = useState<number>(1); // Track selected window
@@ -175,12 +162,6 @@ const DicomViewer: React.FC = () => {
       windowWidth: 600,
       zoomLevel: 1,
       panOffset: { x: 0, y: 0 },
-      mriId: mriId, // Inherit the global mriId if available
-      selectedModel: 'pspnet',
-      segmentationData: null,
-      segmentationDimensions: [0, 0, 0],
-      showOverlay: false,
-      isPredicting: false
     };
     setDynamicWindows(prev => [...prev, newWindow]);
   };
@@ -236,6 +217,13 @@ const DicomViewer: React.FC = () => {
     try {
       console.log("🟢 loadNiftiFile called with:", file.name);
       setCurrentFile(file); // Save file for 3D rendering
+
+      // Clear previous overlay/segmentation data when loading new file
+      setPredictionMask(null);
+      setPredictionDimensions([0, 0, 0]);
+      setShowOverlay(false);
+      setSegmentationSummary(null);
+
       const arrayBuffer = await file.arrayBuffer();
       console.log("🟢 ArrayBuffer loaded, size:", arrayBuffer.byteLength);
       
@@ -310,11 +298,7 @@ const DicomViewer: React.FC = () => {
           const uploadResult = await uploadNiftiFile(file);
           console.log("🟢 File uploaded to backend:", uploadResult);
           setMriId(uploadResult.mri_id);
-          // Update all windows with the new mriId
-          setDynamicWindows(prev => prev.map(window => ({
-            ...window,
-            mriId: uploadResult.mri_id
-          })));
+
         } catch (uploadError) {
           console.error("❌ Failed to upload file to backend:", uploadError);
         }
@@ -544,109 +528,35 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  // Per-window prediction function
-  const runWindowPrediction = async (windowId: number) => {
-    const window = dynamicWindows.find(w => w.id === windowId);
-    if (!window || !window.mriId) {
-      alert("No MRI loaded for this window.");
+  const downloadSegmentationAsNifti = async () => {
+    if (!mriId) {
+      alert("No segmentation data available to download.");
       return;
     }
 
-    // Set window to predicting state
-    updateWindowState(windowId, { isPredicting: true });
-
     try {
-      console.log(`🟢 Running prediction for window ${windowId} with ${window.selectedModel.toUpperCase()} model`);
-      
-      // Step 1: Detect modality
-      console.log('Step 1: Detecting modality...');
-      await detectModality(window.mriId);
-
-      // Step 2: Run segmentation
-      console.log(`Step 2: Running segmentation with ${window.selectedModel} model...`);
-      const segResult = await runSegmentation(window.mriId, window.selectedModel);
-      
-      console.log('Segmentation result:', segResult);
-
-      // Step 3: Download and load the mask for this window
-      console.log('Step 3: Downloading segmentation mask...');
-      const maskData = await downloadSegmentationMaskForWindow(window.mriId);
-
-      // Update window with segmentation data
-      updateWindowState(windowId, {
-        segmentationData: maskData.data,
-        segmentationDimensions: maskData.dimensions,
-        isPredicting: false
-      });
-
-      console.log(`✅ Prediction complete for window ${windowId} using ${window.selectedModel.toUpperCase()}`);
-      
-      // Show success modal with summary
-      setSegmentationSummary(segResult.summary);
-      setShowSuccessModal(true);
-
-    } catch (error: any) {
-      console.error(`❌ Prediction failed for window ${windowId}:`, error);
-      alert(`Prediction failed: ${error.message}`);
-      updateWindowState(windowId, { isPredicting: false });
-    }
-  };
-
-  // Download segmentation mask for a specific window (doesn't update global state)
-  const downloadSegmentationMaskForWindow = async (mriId: number) => {
-    try {
+      const metadataResponse = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation`);
+      const metadata = await metadataResponse.json();
+      const filename = metadata.file_name;
       const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
-
-      if (!response.ok) {
-        throw new Error('Failed to download segmentation mask');
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-
-      const header = nifti.readHeader(arrayBuffer);
-      const dims = [header.dims[1], header.dims[2], header.dims[3]];
-      console.log("🟢 Segmentation dimensions:", dims);
-
-      const dataBuffer = nifti.readImage(header, arrayBuffer);
-
-      let data;
-      const datatype = (header as any).datatype || 4;
-      if (datatype === 4) {
-        const int16Data = new Int16Array(dataBuffer);
-        data = new Float32Array(int16Data);
-      } else if (datatype === 8) {
-        const int32Data = new Int32Array(dataBuffer);
-        data = new Float32Array(int32Data);
-      } else if (datatype === 16) {
-        data = new Float32Array(dataBuffer);
-      } else {
-        const int16Data = new Int16Array(dataBuffer);
-        data = new Float32Array(int16Data);
-      }
-
-      // Apply same rotation as original image
-      const [x, y, z] = dims;
-      const rotated = new Float32Array(data.length);
-      for (let k = 0; k < z; k++) {
-        for (let j = 0; j < y; j++) {
-          for (let i = 0; i < x; i++) {
-            const originalIndex = i + j * x + k * x * y;
-            const newI = j;
-            const newJ = x - 1 - i;
-            const newK = k;
-            const flippedJ = y - 1 - newJ;
-            const newIndex = newI + flippedJ * y + newK * y * x;
-            rotated[newIndex] = data[originalIndex];
-          }
-        }
-      }
-
-      console.log('🟢 Segmentation mask loaded successfully');
       
-      return { data: rotated, dimensions: [y, x, z] as [number, number, number] };
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation file');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+
+      console.log('✅ Segmentation file downloaded successfully:', filename);
     } catch (error) {
-      console.error('❌ Failed to load segmentation mask:', error);
-      throw error;
+      console.error('❌ Failed to download segmentation file:', error);
     }
   };
 
@@ -659,7 +569,7 @@ const DicomViewer: React.FC = () => {
     winWidth: number,
     zoom: number,
     pan: { x: number; y: number },
-    // Per-window overlay data
+    // Global overlay data
     windowShowOverlay: boolean = false,
     windowSegmentationData: Float32Array | null = null,
     windowSegmentationDimensions: [number, number, number] = [0, 0, 0]
@@ -1008,10 +918,9 @@ const DicomViewer: React.FC = () => {
         window.windowWidth,
         window.zoomLevel,
         window.panOffset,
-        // Pass window-specific overlay data
-        window.showOverlay,
-        window.segmentationData,
-        window.segmentationDimensions
+        showOverlay,
+        predictionMask,
+        predictionDimensions
       );
       
       // Draw measurements and annotations on the overlay for this specific window
@@ -1121,7 +1030,7 @@ const DicomViewer: React.FC = () => {
   useEffect(() => {
     renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows, showOverlay, predictionMask]);
 
   // Cleanup viewer windows on unmount
   useEffect(() => {
@@ -1212,12 +1121,6 @@ const DicomViewer: React.FC = () => {
             console.log("🟢 Demo files already exist in backend (S3), loading directly from backend...");
             uploadedMriId = existingFlair.id;
             setMriId(existingFlair.id);
-            
-            // Update all windows with the mriId
-            setDynamicWindows(prev => prev.map(window => ({
-              ...window,
-              mriId: existingFlair.id
-            })));
             
             // Fetch the flair file directly from backend (which gets it from S3)
             console.log(`Fetching flair file from backend (MRI ID: ${existingFlair.id})...`);
@@ -2206,6 +2109,42 @@ const DicomViewer: React.FC = () => {
             )}
 
             <button
+              onClick={downloadSegmentationAsNifti}
+              style={{
+                width: '100%',
+                flex: 1,
+                padding: '12px',
+                background: 'rgba(59, 130, 246, 0.2)',
+                border: '1px solid rgba(59, 130, 246, 0.4)',
+                borderRadius: '8px',
+                color: 'rgb(59, 130, 246)',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                marginBottom: '8px'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.3)';
+                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.6)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.2)';
+                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download as NIFTI File
+            </button>
+            <button
               onClick={() => setShowSuccessModal(false)}
               style={{
                 width: '100%',
@@ -2509,109 +2448,6 @@ const DicomViewer: React.FC = () => {
                     <option value="sagittal">Sagittal</option>
                     <option value="3d">3D Render</option>
                   </select>
-
-                  {/* Prediction controls - center area */}
-                  {window.mriId && (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {/* Model selector */}
-                      <select
-                        value={window.selectedModel}
-                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' })}
-                        disabled={window.isPredicting}
-                        style={{
-                          background: 'rgba(30, 41, 59, 0.9)',
-                          backdropFilter: 'blur(8px)',
-                          WebkitBackdropFilter: 'blur(8px)',
-                          color: '#e2e8f0',
-                          border: '1px solid rgba(139, 92, 246, 0.3)',
-                          borderRadius: 6,
-                          padding: '4px 8px',
-                          fontSize: 11,
-                          fontWeight: 600,
-                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
-                          outline: 'none',
-                          opacity: window.isPredicting ? 0.5 : 1,
-                        }}
-                      >
-                        <option value="pspnet">PSPNet</option>
-                        <option value="unet">U-Net</option>
-                      </select>
-
-                      {/* Run Prediction button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          runWindowPrediction(window.id);
-                        }}
-                        disabled={window.isPredicting}
-                        style={{
-                          background: window.isPredicting 
-                            ? 'rgba(107, 114, 128, 0.2)' 
-                            : 'rgba(139, 92, 246, 0.2)',
-                          backdropFilter: 'blur(8px)',
-                          WebkitBackdropFilter: 'blur(8px)',
-                          border: window.isPredicting 
-                            ? '1px solid rgba(107, 114, 128, 0.4)' 
-                            : '1px solid rgba(139, 92, 246, 0.4)',
-                          borderRadius: 6,
-                          color: window.isPredicting ? '#9ca3af' : '#c4b5fd',
-                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
-                          padding: '4px 12px',
-                          fontSize: 11,
-                          fontWeight: 600,
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          transition: 'all 0.2s ease',
-                        }}
-                      >
-                        {window.isPredicting ? (
-                          <>
-                            <span className="spinner" style={{
-                              width: 12,
-                              height: 12,
-                              border: '2px solid rgba(156, 163, 175, 0.3)',
-                              borderTop: '2px solid #9ca3af',
-                              borderRadius: '50%',
-                              animation: 'spin 1s linear infinite',
-                            }} />
-                            Running...
-                          </>
-                        ) : (
-                          '▶ Predict'
-                        )}
-                      </button>
-
-                      {/* Show Overlay toggle */}
-                      {window.segmentationData && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            updateWindowState(window.id, { showOverlay: !window.showOverlay });
-                          }}
-                          style={{
-                            background: window.showOverlay 
-                              ? 'rgba(34, 197, 94, 0.2)' 
-                              : 'rgba(148, 163, 184, 0.2)',
-                            backdropFilter: 'blur(8px)',
-                            WebkitBackdropFilter: 'blur(8px)',
-                            border: window.showOverlay 
-                              ? '1px solid rgba(34, 197, 94, 0.4)' 
-                              : '1px solid rgba(148, 163, 184, 0.4)',
-                            borderRadius: 6,
-                            color: window.showOverlay ? '#86efac' : '#cbd5e1',
-                            cursor: 'pointer',
-                            padding: '4px 12px',
-                            fontSize: 11,
-                            fontWeight: 600,
-                            transition: 'all 0.2s ease',
-                          }}
-                        >
-                          {window.showOverlay ? '👁️ Hide' : '👁️ Show'}
-                        </button>
-                      )}
-                    </div>
-                  )}
 
                   {/* Delete button */}
                   {dynamicWindows.length > 1 && (
@@ -3351,6 +3187,34 @@ const DicomViewer: React.FC = () => {
       }}
     >
       {showOverlay ? 'Hide Overlay' : 'Show Overlay'}
+    </button>
+
+    {/* Download Segmentation Button */}
+    <button
+      onClick={downloadSegmentationAsNifti}
+      disabled={!predictionMask}
+      style={{
+        background: predictionMask ? 'rgba(59,130,246,0.6)' : 'rgba(51,65,85,0.6)',
+        border: predictionMask ? '1px solid rgba(59,130,246,0.6)' : '1px solid rgba(148,163,184,0.3)',
+        borderRadius: '6px',
+        color: '#fff',
+        padding: '10px',
+        fontWeight: 600,
+        cursor: predictionMask ? 'pointer' : 'not-allowed',
+        opacity: predictionMask ? 1 : 0.5,
+        transition: 'all 0.2s ease',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download Segmentation
     </button>
         </div>
 )}
