@@ -9,4 +9,7 @@ __pycache__/
 .env.local
 .env*.local
 
+#Segmentation Models
 data/
+Segmentation_Models/PSPNet/checkpoints/
+Segmentation_Models/PSPNet/results/
