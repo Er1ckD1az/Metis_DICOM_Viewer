@@ -286,9 +286,11 @@ export default function Landing() {
               <span
                 style={{
                   padding: "2px 8px",
-                  background: "#f3f4f6",
-                  border: "1px solid #e5e7eb",
+                  background: isDarkMode ? "#334155" : "#f3f4f6",
+                  border: isDarkMode ? "1px solid #475569" : "1px solid #e5e7eb",
                   borderRadius: 6,
+                  color: isDarkMode ? "#f1f5f9" : "#0f172a",
+                  fontWeight: 600,
                 }}
               >
                 3D
