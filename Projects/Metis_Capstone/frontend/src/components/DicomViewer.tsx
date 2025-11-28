@@ -47,6 +47,7 @@ const DicomViewer: React.FC = () => {
   const [hasImage, setHasImage] = useState(false);
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
   const [dimensions, setDimensions] = useState<[number, number, number]>([0, 0, 0]);
+  const [pixelSpacing, setPixelSpacing] = useState<[number, number, number]>([1, 1, 1]);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
   const [mriId, setMriId] = useState<number | null>(null);
 
@@ -235,7 +236,16 @@ const DicomViewer: React.FC = () => {
       
       const header = nifti.readHeader(arrayBuffer);
       const dims = [header.dims[1], header.dims[2], header.dims[3]];
-      console.log("🟢 Dimensions:", dims);
+      
+      // Read pixel dimensions (mm) if available, otherwise default to 1mm
+      const pixDims = (header as any).pixDims || [1, 1, 1, 1];
+      // Since we rotate the image (swap X/Y), we must swap the spacing too
+      // Original: dims[1]=x, dims[2]=y
+      // Rotated: x becomes y, y becomes x
+      const spacing = [pixDims[2], pixDims[1], pixDims[3]];
+      setPixelSpacing(spacing as [number, number, number]);
+
+      console.log("🟢 Dimensions:", dims, "Spacing:", spacing);
       
       const dataBuffer = nifti.readImage(header, arrayBuffer);
 
@@ -848,45 +858,182 @@ const DicomViewer: React.FC = () => {
     const baseCircleRadius = 8 / zoom;
     
     measurements.filter(m => m.windowId === windowId).forEach((m) => {
+      // 1. Draw the main measurement line (Cyan with shadow)
       ctx.beginPath();
       ctx.moveTo(m.x1, m.y1);
       ctx.lineTo(m.x2, m.y2);
-      ctx.strokeStyle = '#00FF00';
-      ctx.lineWidth = baseLineWidth;
+      
+      // Shadow/Outline for visibility on white background
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = baseLineWidth + (2 / zoom); 
       ctx.stroke();
       
-          const dx = m.x2 - m.x1;
-          const dy = m.y2 - m.y1;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      ctx.fillStyle = '#00FF00';
-      ctx.font = `${baseFontSize}px system-ui`;
-      ctx.fillText(`${distance.toFixed(1)}px`, (m.x1 + m.x2) / 2 + 5 / zoom, (m.y1 + m.y2) / 2 - 5 / zoom);
+      // Main Cyan Line
+      ctx.strokeStyle = '#00FFFF'; // Cyan/Turquoise
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+
+      // 2. Draw T-bars (End Caps)
+      const capSize = 10 / zoom; // Size of the T-bar
+      const dx = m.x2 - m.x1;
+      const dy = m.y2 - m.y1;
+      const angle = Math.atan2(dy, dx);
+      
+      // Function to draw T-cap
+      const drawCap = (x: number, y: number) => {
+        ctx.beginPath();
+        ctx.moveTo(
+          x - capSize * Math.sin(angle),
+          y + capSize * Math.cos(angle)
+        );
+        ctx.lineTo(
+          x + capSize * Math.sin(angle),
+          y - capSize * Math.cos(angle)
+        );
+        // Shadow
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.lineWidth = baseLineWidth + (2 / zoom);
+        ctx.stroke();
+        // Main Line
+        ctx.strokeStyle = '#00FFFF';
+        ctx.lineWidth = baseLineWidth;
+        ctx.stroke();
+      };
+
+      drawCap(m.x1, m.y1);
+      drawCap(m.x2, m.y2);
+
+      // 3. Calculate Real-World Distance (mm)
+      // A. Determine MRI dimensions for this view to calculate Scale
+      const [dim0, dim1, dim2] = dimensions; // [y, x, z]
+      let mriWidth = 1, mriHeight = 1;
+      let spacingX = 1, spacingY = 1;
+      const [s0, s1, s2] = pixelSpacing; // [y_spacing, x_spacing, z_spacing]
+
+      if (window.view === 'axial') {
+          mriWidth = dim1 || 1; mriHeight = dim0 || 1;
+          spacingX = s1 || 1; spacingY = s0 || 1;
+      } else if (window.view === 'coronal') {
+          mriWidth = dim1 || 1; mriHeight = dim2 || 1;
+          spacingX = s1 || 1; spacingY = s2 || 1;
+      } else if (window.view === 'sagittal') {
+          mriWidth = dim0 || 1; mriHeight = dim2 || 1;
+          spacingX = s0 || 1; spacingY = s2 || 1;
+      }
+
+      // B. Calculate Scale (must match renderViewToCanvas logic)
+      // scale = min(container / mri) * 0.9
+      const scale = Math.min(containerWidth / mriWidth, containerHeight / mriHeight) * 0.9;
+      
+      // C. Convert Canvas Pixels -> MRI Voxels -> Millimeters
+      // dx is in Canvas Pixels. dx / scale = MRI Voxels.
+      const distMm = Math.sqrt(
+        Math.pow((dx / scale) * spacingX, 2) + 
+        Math.pow((dy / scale) * spacingY, 2)
+      );
+      
+      const labelText = `${distMm.toFixed(1)} mm`;
+
+      // 4. Draw Label Box (Centered)
+      ctx.font = `bold ${baseFontSize}px "Consolas", "Roboto Mono", monospace`;
+      const textMetrics = ctx.measureText(labelText);
+      const padding = 4 / zoom;
+      const boxWidth = textMetrics.width + (padding * 2);
+      const boxHeight = baseFontSize * 1.4;
+      
+      const centerX = (m.x1 + m.x2) / 2;
+      const centerY = (m.y1 + m.y2) / 2;
+
+      // Semi-transparent background box
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.fillRect(
+        centerX - boxWidth / 2,
+        centerY - boxHeight / 2,
+        boxWidth,
+        boxHeight
+      );
+
+      // Text
+      ctx.fillStyle = '#00FFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, centerX, centerY);
     });
 
     // Draw only annotations for this window
     const windowAnnotations = annotations.filter(a => a.windowId === windowId);
     windowAnnotations.forEach((a) => {
+      // High-Vis Navy Marker
+      const markerColor = '#000080'; // Navy Blue
+      
+      // WHITE GLOW for MAXIMUM POP on dark backgrounds
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Thick Visible Ring
       ctx.beginPath();
       ctx.arc(a.x, a.y, baseCircleRadius, 0, Math.PI * 2);
-      ctx.fillStyle = a.color;
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = baseLineWidth;
+      ctx.strokeStyle = markerColor;
+      ctx.lineWidth = 3 / zoom; // Bolder
       ctx.stroke();
+      
+      // Center Dot
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, 3 / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = markerColor;
+      ctx.fill();
+      
+      ctx.shadowColor = 'transparent';
 
       // Draw text if hovered (need to find the actual index in the full annotations array)
       const fullIdx = annotations.indexOf(a);
       if (hoveredAnnotation === fullIdx && a.text) {
-        const textOffset = 12 / zoom;
-        const boxWidth = 100 / zoom;
-        const boxHeight = 24 / zoom;
-        const textPadding = 4 / zoom;
+        const padding = 8 / zoom;
+        const offset = 12 / zoom;
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.fillRect(a.x + textOffset, a.y - 20 / zoom, boxWidth, boxHeight);
-        ctx.fillStyle = '#fff';
-        ctx.font = `${baseFontSize}px system-ui`;
-        ctx.fillText(a.text, a.x + textOffset + textPadding, a.y - textPadding);
+        ctx.font = `500 ${baseFontSize}px "Inter", system-ui, -apple-system, sans-serif`;
+        const metrics = ctx.measureText(a.text);
+        const boxWidth = metrics.width + (padding * 2);
+        const boxHeight = baseFontSize * 2.2;
+        const boxX = a.x + offset;
+        const boxY = a.y - (boxHeight / 2);
+        const radius = 4 / zoom;
+
+        // Tooltip Shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = 8;
+        ctx.shadowOffsetY = 4;
+
+        // Tooltip Background (Dark Slate)
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 1 / zoom;
+
+        // Rounded Rect Path
+        ctx.beginPath();
+        ctx.moveTo(boxX + radius, boxY);
+        ctx.lineTo(boxX + boxWidth - radius, boxY);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + radius);
+        ctx.lineTo(boxX + boxWidth, boxY + boxHeight - radius);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY + boxHeight, boxX + boxWidth - radius, boxY + boxHeight);
+        ctx.lineTo(boxX + radius, boxY + boxHeight);
+        ctx.quadraticCurveTo(boxX, boxY + boxHeight, boxX, boxY + boxHeight - radius);
+        ctx.lineTo(boxX, boxY + radius);
+        ctx.quadraticCurveTo(boxX, boxY, boxX + radius, boxY);
+        ctx.closePath();
+        
+        ctx.fill();
+        ctx.shadowColor = 'transparent'; // clear shadow for text
+        ctx.stroke();
+
+        // Tooltip Text
+        ctx.fillStyle = '#f8fafc';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Draw at exact center of box
+        ctx.fillText(a.text, boxX + (boxWidth / 2), boxY + (boxHeight / 2) + (1 / zoom));
       }
     });
   };
@@ -1702,15 +1849,62 @@ const DicomViewer: React.FC = () => {
         octx.beginPath();
         octx.moveTo(drawingRef.current.x, drawingRef.current.y);
         octx.lineTo(transformedX, transformedY);
-        octx.strokeStyle = '#00FF00';
+        
+        // Shadow
+        octx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        octx.lineWidth = (2 / zoom) + (2 / zoom);
+        octx.stroke();
+        
+        // Main Cyan Line
+        octx.strokeStyle = '#00FFFF';
         octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
         
         const dx = transformedX - drawingRef.current.x;
         const dy = transformedY - drawingRef.current.y;
-        octx.fillStyle = '#00FF00';
-        octx.font = `${12 / zoom}px system-ui`; // Keep font size constant
-        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + transformedX)/2 + 5 / zoom, (drawingRef.current.y + transformedY)/2 - 5 / zoom);
+
+        // Calculate Real-World Distance (mm) for preview
+        // Scale calculation (same as main render)
+        const [dim0, dim1, dim2] = dimensions;
+        let mriWidth = 1, mriHeight = 1;
+        let spacingX = 1, spacingY = 1;
+        const [s0, s1, s2] = pixelSpacing;
+
+        if (selectedWindow.view === 'axial') {
+            mriWidth = dim1 || 1; mriHeight = dim0 || 1;
+            spacingX = s1 || 1; spacingY = s0 || 1;
+        } else if (selectedWindow.view === 'coronal') {
+            mriWidth = dim1 || 1; mriHeight = dim2 || 1;
+            spacingX = s1 || 1; spacingY = s2 || 1;
+        } else if (selectedWindow.view === 'sagittal') {
+            mriWidth = dim0 || 1; mriHeight = dim2 || 1;
+            spacingX = s0 || 1; spacingY = s2 || 1;
+        }
+
+        const scale = Math.min(containerWidth / mriWidth, containerHeight / mriHeight) * 0.9;
+        
+        const distMm = Math.sqrt(
+          Math.pow((dx / scale) * spacingX, 2) + 
+          Math.pow((dy / scale) * spacingY, 2)
+        );
+        
+        const labelText = `${distMm.toFixed(1)} mm`;
+
+        octx.font = `bold ${12 / zoom}px "Consolas", "Roboto Mono", monospace`;
+        const textMetrics = octx.measureText(labelText);
+        const boxWidth = textMetrics.width + (8 / zoom);
+        const boxHeight = (12 / zoom) * 1.4;
+        
+        const midX = (drawingRef.current.x + transformedX) / 2;
+        const midY = (drawingRef.current.y + transformedY) / 2;
+
+        octx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        octx.fillRect(midX - boxWidth/2, midY - boxHeight/2, boxWidth, boxHeight);
+
+        octx.fillStyle = '#00FFFF';
+        octx.textAlign = 'center';
+        octx.textBaseline = 'middle';
+        octx.fillText(labelText, midX, midY);
       } else if (mode === 'annotate'){
         renderAllViews();
         const octx = overlay.getContext('2d');
@@ -1742,14 +1936,26 @@ const DicomViewer: React.FC = () => {
         const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
         const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
         
-        // Draw preview circle (in image space coordinates)
+        // Draw preview circle (Navy Pop)
+        const markerColor = '#000080';
+        
+        octx.shadowColor = '#ffffff';
+        octx.shadowBlur = 10;
+        
+        // Thick Ring
         octx.beginPath();
-        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2); // Keep circle size constant
-        octx.fillStyle = '#FF8C00'; // Orange
-        octx.fill();
-        octx.strokeStyle = '#fff';
-        octx.lineWidth = 2 / zoom; // Keep line width constant
+        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2);
+        octx.strokeStyle = markerColor;
+        octx.lineWidth = 3 / zoom;
         octx.stroke();
+        
+        // Center Dot
+        octx.beginPath();
+        octx.arc(transformedX, transformedY, 3 / zoom, 0, Math.PI*2);
+        octx.fillStyle = markerColor;
+        octx.fill();
+        
+        octx.shadowColor = 'transparent';
       }
     };
 
@@ -2397,7 +2603,7 @@ const DicomViewer: React.FC = () => {
                     : 'none',
                   cursor: mode === 'measure' ? 'crosshair' :
                          mode === 'annotate' ? 'cell' :
-                         mode === 'erase' ? 'not-allowed' :
+                         mode === 'erase' ? "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 24 24\" stroke-width=\"1\" stroke-linejoin=\"round\"><path d=\"M21.4 8.8 L15.2 2.6 c-0.8-0.8-2-0.8-2.8 0 L6.2 9.6 L13.8 17.2 L21.4 8.8 Z\" fill=\"%23f3f4f6\" stroke=\"%239ca3af\"/><path d=\"M6.2 9.6 L2.6 12.4 c-0.8 0.8 -0.8 2 0 2.8 L8.8 21.4 c0.8 0.8 2 0.8 2.8 0 L13.8 17.2 L6.2 9.6 Z\" fill=\"%23ffcdd2\" stroke=\"%23e57373\"/></svg>') 6 20, auto" :
                          interactionMode === 'pan' ? 'grab' :
                          'default', // Don't use 'pointer' - let measurement modes take precedence
                   transition: 'all 0.2s ease',
