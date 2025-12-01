@@ -3769,7 +3769,7 @@ const DicomViewer: React.FC = () => {
                 </svg>
                 <div>
                   <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 500, color: '#f8fafc', letterSpacing: '0.01em' }}>Keyboard Shortcuts Reference</h2>
-                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>Clinical Viewer Controls</p>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}></p>
                 </div>
               </div>
               <button
