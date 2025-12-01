@@ -6,6 +6,40 @@ import { Niivue } from "@niivue/niivue";
 
 const API_BASE_URL = 'http://localhost:8000'; // Backend URL
 
+// Helper component for hotkey legend rows
+const HotkeyRow: React.FC<{ keys: string[]; description: string }> = ({ keys, description }) => (
+  <div style={{
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '6px 0',
+  }}>
+    <span style={{ color: '#cbd5e1', fontSize: '14px' }}>{description}</span>
+    <div style={{ display: 'flex', gap: '4px' }}>
+      {keys.map((key, i) => (
+        <React.Fragment key={i}>
+          <kbd style={{
+            background: 'linear-gradient(180deg, rgba(71, 85, 105, 0.8) 0%, rgba(51, 65, 85, 0.8) 100%)',
+            border: '1px solid rgba(148, 163, 184, 0.3)',
+            borderRadius: '6px',
+            padding: '4px 8px',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: '#e2e8f0',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            minWidth: '24px',
+            textAlign: 'center',
+            boxShadow: '0 2px 0 rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+          }}>{key}</kbd>
+          {i < keys.length - 1 && keys.length > 1 && (
+            <span style={{ color: '#64748b', fontSize: '11px', alignSelf: 'center' }}>+</span>
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  </div>
+);
+
 const uploadNiftiFile = async (file: File): Promise<{ 
   mri_id: number; 
   file_path: string; 
@@ -60,6 +94,7 @@ const DicomViewer: React.FC = () => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
   const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
+  const [showHotkeyLegend, setShowHotkeyLegend] = useState(false);
 
   // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
@@ -2172,8 +2207,8 @@ const DicomViewer: React.FC = () => {
         return;
       }
 
-      if (key === " " || key === "spacebar") {
-        // Space to run model
+      if (key === "enter" && (e.ctrlKey || e.metaKey)) {
+        // Ctrl/Cmd + Enter to run model prediction
         if (!isPredicting && niftiData && mriId) {
           e.preventDefault();
           handlePrediction();
@@ -2228,8 +2263,12 @@ const DicomViewer: React.FC = () => {
       // ==== Reset ====
       if (key === "escape") {
         e.preventDefault();
-        activateInteractionMode(null);
-        activateMeasuringMode("none");
+        if (showHotkeyLegend) {
+          setShowHotkeyLegend(false);
+        } else {
+          activateInteractionMode(null);
+          activateMeasuringMode("none");
+        }
         return;
       }
 
@@ -2237,6 +2276,17 @@ const DicomViewer: React.FC = () => {
         // Global reset (same as bottom-right button)
         e.preventDefault();
         resetView();
+        return;
+      }
+
+      // ==== Help / Hotkey Legend ====
+      // Check for ? (Shift + /) or H
+      // Note: e.key might be "?" directly or "/" with shiftKey depending on browser/OS
+      const isQuestionMark = e.key === "?" || (e.code === "Slash" && e.shiftKey);
+      
+      if (isQuestionMark || key === "h") {
+        e.preventDefault();
+        setShowHotkeyLegend(prev => !prev);
         return;
       }
     };
@@ -2252,6 +2302,7 @@ const DicomViewer: React.FC = () => {
     niftiData,
     mriId,
     changeWindowView,
+    showHotkeyLegend,
   ]);
 
 
@@ -3669,13 +3720,252 @@ const DicomViewer: React.FC = () => {
       </div>
       </div>
 
+      {/* Hotkey Legend Modal */}
+      {showHotkeyLegend && (
+        <div
+          onClick={() => setShowHotkeyLegend(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '40px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#1e293b',
+              border: '1px solid #334155',
+              borderRadius: '8px',
+              width: '100%',
+              maxWidth: '1100px',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '20px 32px',
+              borderBottom: '1px solid #334155',
+              background: '#0f172a',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="1.5">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M9 16h6" />
+                </svg>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 500, color: '#f8fafc', letterSpacing: '0.01em' }}>Keyboard Shortcuts Reference</h2>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}></p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowHotkeyLegend(false)}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '8px',
+                  cursor: 'pointer',
+                  color: '#94a3b8',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#334155';
+                  e.currentTarget.style.color = '#f1f5f9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = '#94a3b8';
+                }}
+              >
+                <span style={{ fontSize: '13px', marginRight: '6px' }}>Close</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div style={{
+              padding: '0',
+              overflowY: 'auto',
+              background: '#1e293b',
+              display: 'flex',
+              height: '100%',
+            }}>
+              {/* Column 1 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px', 
+                borderRight: '1px solid #334155',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                {/* Navigation Section */}
+                <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Slice Navigation
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['↑']} description="Next slice" />
+                    <HotkeyRow keys={['↓']} description="Previous slice" />
+                    <HotkeyRow keys={['Shift', '↑/↓']} description="Jump 5 slices" />
+                    <HotkeyRow keys={['+']} description="Zoom in" />
+                    <HotkeyRow keys={['-']} description="Zoom out" />
+                  </div>
+                </div>
+
+                {/* System Controls */}
+                <div style={{ borderTop: '1px solid #334155', paddingTop: '32px' }}>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    System Controls
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['R']} description="Reset all views" />
+                    <HotkeyRow keys={['Esc']} description="Cancel tool / action" />
+                    <HotkeyRow keys={['?']} description="Toggle shortcuts" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Column 2 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px', 
+                borderRight: '1px solid #334155',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                {/* Viewport Management */}
+                <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Viewport Management
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['1', '2', '3', '4']} description="Select active viewport" />
+                    <HotkeyRow keys={['X']} description="Set Axial view" />
+                    <HotkeyRow keys={['Y']} description="Set Coronal view" />
+                    <HotkeyRow keys={['G']} description="Set Sagittal view" />
+                    <HotkeyRow keys={['V']} description="Set 3D Volume view" />
+                    <HotkeyRow keys={['Tab']} description="Cycle view mode" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Column 3 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                 {/* Tools & Analysis */}
+                 <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Tools & Analysis
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['S']} description="Scroll tool" />
+                    <HotkeyRow keys={['Z']} description="Zoom tool" />
+                    <HotkeyRow keys={['P']} description="Pan tool" />
+                    <HotkeyRow keys={['B']} description="Window/Level (Brightness)" />
+                    <HotkeyRow keys={['C']} description="Window Width (Contrast)" />
+                  </div>
+                </div>
+
+                {/* Annotation & AI */}
+                <div style={{ borderTop: '1px solid #334155', paddingTop: '32px' }}>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Annotation & AI
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['M']} description="Linear Measurement" />
+                    <HotkeyRow keys={['A']} description="Point Annotation" />
+                    <HotkeyRow keys={['E']} description="Eraser" />
+                    <div style={{ height: '8px' }} />
+                    <HotkeyRow keys={['Ctrl', 'Enter']} description="Run Segmentation Model" />
+                    <HotkeyRow keys={['O']} description="Toggle Segmentation Overlay" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reset Button - Bottom Right */}
       <button
         onClick={resetView}
         title="Reset view to default"
         style={{
           position: 'fixed',
-          bottom: 20,
+          bottom: 60,
           right: 20,
           zIndex: 50,
           background: 'rgba(59, 130, 246, 0.4)',
@@ -3691,8 +3981,10 @@ const DicomViewer: React.FC = () => {
           transition: 'all 0.2s ease',
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'center',
           gap: '6px',
           boxShadow: '0 4px 16px 0 rgba(59, 130, 246, 0.3)',
+          width: '140px',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = 'rgba(59, 130, 246, 0.6)';
@@ -3712,6 +4004,55 @@ const DicomViewer: React.FC = () => {
           <path d="M3 21v-5h5"/>
         </svg>
         Reset View
+      </button>
+
+      {/* Hotkey Legend Button - Bottom Right (Under Reset) */}
+      <button
+        onClick={() => setShowHotkeyLegend(true)}
+        title="Keyboard Shortcuts (Press ? or H)"
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          zIndex: 50,
+          background: 'rgba(30, 41, 59, 0.6)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          border: '1px solid rgba(148, 163, 184, 0.3)',
+          borderRadius: '8px',
+          padding: '8px 16px',
+          cursor: 'pointer',
+          color: '#cbd5e1',
+          fontSize: '12px',
+          fontWeight: 500,
+          transition: 'all 0.2s ease',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+          width: '140px',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(51, 65, 85, 0.8)';
+          e.currentTarget.style.color = '#f1f5f9';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(30, 41, 59, 0.6)';
+          e.currentTarget.style.color = '#cbd5e1';
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M9 16h6" />
+        </svg>
+        <span>Shortcuts</span>
+        <span style={{
+          background: 'rgba(255, 255, 255, 0.1)',
+          padding: '1px 5px',
+          borderRadius: '3px',
+          fontSize: '10px',
+          marginLeft: 'auto',
+        }}>?</span>
       </button>
 
       {viewerWindows.map(window =>(
