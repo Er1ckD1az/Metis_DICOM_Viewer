@@ -2015,6 +2015,246 @@ const DicomViewer: React.FC = () => {
     };
   }, [mode, measurements, annotations, hoveredAnnotation, selectedWindowId, dynamicWindows]);
 
+    // --- Helpers for hotkeys (slice + zoom + window/view selection) ---
+  const getMaxSliceIndexForView = (view: ViewType) => {
+    if (view === "axial") return Math.max(0, dimensions[2] - 1);
+    if (view === "coronal") return Math.max(0, dimensions[1] - 1);
+    if (view === "sagittal") return Math.max(0, dimensions[0] - 1);
+    return 0;
+  };
+
+  const adjustSliceForSelectedWindow = (delta: number) => {
+    setDynamicWindows(prev =>
+      prev.map(w => {
+        if (w.id !== selectedWindowId || w.view === "3d") return w;
+        const maxSlice = getMaxSliceIndexForView(w.view);
+        const next = Math.min(maxSlice, Math.max(0, w.slice + delta));
+        return { ...w, slice: next };
+      })
+    );
+  };
+
+  const adjustZoomForSelectedWindow = (factor: number) => {
+    setDynamicWindows(prev =>
+      prev.map(w => {
+        if (w.id !== selectedWindowId || w.view === "3d") return w;
+        const nextZoom = Math.min(5, Math.max(0.2, w.zoomLevel * factor));
+        return { ...w, zoomLevel: nextZoom };
+      })
+    );
+  };
+
+  const selectWindowByIndex = (index: number) => {
+    // index is 0-based, hotkeys 1–4 are 1-based
+    if (index < 0 || index >= dynamicWindows.length) return;
+    const win = dynamicWindows[index];
+    setSelectedWindowId(win.id);
+  };
+
+  const cycleViewForSelectedWindow = () => {
+    const current = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!current) return;
+    const order: ViewType[] = ["axial", "coronal", "sagittal", "3d"];
+    const idx = order.indexOf(current.view);
+    const nextView = order[(idx + 1) % order.length];
+    changeWindowView(current.id, nextView);
+  };
+
+  const setViewForSelectedWindow = (view: ViewType) => {
+    const current = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!current) return;
+    changeWindowView(current.id, view);
+  };
+
+  // --- Global keyboard shortcuts / hotkeys ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept keys while typing in forms / inputs
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName.toLowerCase();
+        if (
+          tag === "input" ||
+          tag === "textarea" ||
+          (target as any).isContentEditable
+        ) {
+          return;
+        }
+      }
+
+      const key = e.key.toLowerCase();
+
+      // ==== Slice navigation & zoom ====
+      if (key === "arrowup") {
+        e.preventDefault();
+        adjustSliceForSelectedWindow(e.shiftKey ? +5 : +1);
+        return;
+      }
+      if (key === "arrowdown") {
+        e.preventDefault();
+        adjustSliceForSelectedWindow(e.shiftKey ? -5 : -1);
+        return;
+      }
+
+      // + / - zoom
+      if (key === "+" || key === "=") {
+        e.preventDefault();
+        adjustZoomForSelectedWindow(1.15);
+        return;
+      }
+      if (key === "-" || key === "_") {
+        e.preventDefault();
+        adjustZoomForSelectedWindow(1 / 1.15);
+        return;
+      }
+
+      // ==== Window selection (1–4) ====
+      if (key === "1") {
+        e.preventDefault();
+        selectWindowByIndex(0);
+        return;
+      }
+      if (key === "2") {
+        e.preventDefault();
+        selectWindowByIndex(1);
+        return;
+      }
+      if (key === "3") {
+        e.preventDefault();
+        selectWindowByIndex(2);
+        return;
+      }
+      if (key === "4") {
+        e.preventDefault();
+        selectWindowByIndex(3);
+        return;
+      }
+
+      // ==== View switching on selected window ====
+      if (key === "x") {
+        // axial
+        e.preventDefault();
+        setViewForSelectedWindow("axial");
+        return;
+      }
+      if (key === "y") {
+        // coronal
+        e.preventDefault();
+        setViewForSelectedWindow("coronal");
+        return;
+      }
+      if (key === "g") {
+        // saGittal
+        e.preventDefault();
+        setViewForSelectedWindow("sagittal");
+        return;
+      }
+      if (key === "v") {
+        // Volume render (3D)
+        e.preventDefault();
+        setViewForSelectedWindow("3d");
+        return;
+      }
+
+      // Optional: cycle views with Tab
+      if (key === "tab") {
+        e.preventDefault();
+        cycleViewForSelectedWindow();
+        return;
+      }
+
+      // ==== Overlay + prediction ====
+      if (key === "o") {
+        if (predictionMask) {
+          e.preventDefault();
+          setShowOverlay(prev => !prev);
+        }
+        return;
+      }
+
+      if (key === " " || key === "spacebar") {
+        // Space to run model
+        if (!isPredicting && niftiData && mriId) {
+          e.preventDefault();
+          handlePrediction();
+        }
+        return;
+      }
+
+      // ==== Interaction modes ====
+      if (key === "s") {
+        e.preventDefault();
+        activateInteractionMode("scroll");
+        return;
+      }
+      if (key === "z") {
+        e.preventDefault();
+        activateInteractionMode("zoom");
+        return;
+      }
+      if (key === "p") {
+        e.preventDefault();
+        activateInteractionMode("pan");
+        return;
+      }
+      if (key === "b") {
+        e.preventDefault();
+        activateInteractionMode("brightness");
+        return;
+      }
+      if (key === "c") {
+        e.preventDefault();
+        activateInteractionMode("contrast");
+        return;
+      }
+
+      // ==== Measuring / annotations ====
+      if (key === "m") {
+        e.preventDefault();
+        activateMeasuringMode("measure");
+        return;
+      }
+      if (key === "a") {
+        e.preventDefault();
+        activateMeasuringMode("annotate");
+        return;
+      }
+      if (key === "e") {
+        e.preventDefault();
+        activateMeasuringMode("erase");
+        return;
+      }
+
+      // ==== Reset ====
+      if (key === "escape") {
+        e.preventDefault();
+        activateInteractionMode(null);
+        activateMeasuringMode("none");
+        return;
+      }
+
+      if (key === "r") {
+        // Global reset (same as bottom-right button)
+        e.preventDefault();
+        resetView();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    dynamicWindows,
+    selectedWindowId,
+    dimensions,
+    predictionMask,
+    isPredicting,
+    niftiData,
+    mriId,
+    changeWindowView,
+  ]);
+
+
   // Set cursor based on active mode
   useEffect(() => {
     const wrapper = wrapperRef.current;
