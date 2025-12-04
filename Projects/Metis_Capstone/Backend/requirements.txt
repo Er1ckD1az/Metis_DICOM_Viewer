@@ -9,3 +9,4 @@ nibabel
 tqdm
 numpy
 httpx
+gradio_client
