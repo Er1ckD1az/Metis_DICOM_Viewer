@@ -6,6 +6,40 @@ import { Niivue } from "@niivue/niivue";
 
 const API_BASE_URL = 'http://localhost:8000'; // Backend URL
 
+// Helper component for hotkey legend rows
+const HotkeyRow: React.FC<{ keys: string[]; description: string }> = ({ keys, description }) => (
+  <div style={{
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '6px 0',
+  }}>
+    <span style={{ color: '#cbd5e1', fontSize: '14px' }}>{description}</span>
+    <div style={{ display: 'flex', gap: '4px' }}>
+      {keys.map((key, i) => (
+        <React.Fragment key={i}>
+          <kbd style={{
+            background: 'linear-gradient(180deg, rgba(71, 85, 105, 0.8) 0%, rgba(51, 65, 85, 0.8) 100%)',
+            border: '1px solid rgba(148, 163, 184, 0.3)',
+            borderRadius: '6px',
+            padding: '4px 8px',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: '#e2e8f0',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            minWidth: '24px',
+            textAlign: 'center',
+            boxShadow: '0 2px 0 rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+          }}>{key}</kbd>
+          {i < keys.length - 1 && keys.length > 1 && (
+            <span style={{ color: '#64748b', fontSize: '11px', alignSelf: 'center' }}>+</span>
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  </div>
+);
+
 const uploadNiftiFile = async (file: File): Promise<{ 
   mri_id: number; 
   file_path: string; 
@@ -47,6 +81,7 @@ const DicomViewer: React.FC = () => {
   const [hasImage, setHasImage] = useState(false);
   const [niftiData, setNiftiData] = useState<Float32Array | null>(null);
   const [dimensions, setDimensions] = useState<[number, number, number]>([0, 0, 0]);
+  const [pixelSpacing, setPixelSpacing] = useState<[number, number, number]>([1, 1, 1]);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
   const [mriId, setMriId] = useState<number | null>(null);
 
@@ -59,6 +94,7 @@ const DicomViewer: React.FC = () => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
   const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
+  const [showHotkeyLegend, setShowHotkeyLegend] = useState(false);
 
   // Dynamic windows state with per-window settings
   type ViewType = 'axial' | 'coronal' | 'sagittal' | '3d';
@@ -70,13 +106,6 @@ const DicomViewer: React.FC = () => {
     windowWidth: number;
     zoomLevel: number;
     panOffset: { x: number; y: number };
-    // Per-window prediction state
-    mriId: number | null;
-    selectedModel: 'pspnet' | 'unet';
-    segmentationData: Float32Array | null;
-    segmentationDimensions: [number, number, number];
-    showOverlay: boolean;
-    isPredicting: boolean;
   };
   
   const [dynamicWindows, setDynamicWindows] = useState<WindowState[]>([
@@ -87,13 +116,7 @@ const DicomViewer: React.FC = () => {
       windowLevel: 200,
       windowWidth: 600,
       zoomLevel: 1,
-      panOffset: { x: 0, y: 0 },
-      mriId: null,
-      selectedModel: 'pspnet',
-      segmentationData: null,
-      segmentationDimensions: [0, 0, 0],
-      showOverlay: false,
-      isPredicting: false
+      panOffset: { x: 0, y: 0 }
     }
   ]);
   const [selectedWindowId, setSelectedWindowId] = useState<number>(1); // Track selected window
@@ -175,12 +198,6 @@ const DicomViewer: React.FC = () => {
       windowWidth: 600,
       zoomLevel: 1,
       panOffset: { x: 0, y: 0 },
-      mriId: mriId, // Inherit the global mriId if available
-      selectedModel: 'pspnet',
-      segmentationData: null,
-      segmentationDimensions: [0, 0, 0],
-      showOverlay: false,
-      isPredicting: false
     };
     setDynamicWindows(prev => [...prev, newWindow]);
   };
@@ -236,6 +253,13 @@ const DicomViewer: React.FC = () => {
     try {
       console.log("🟢 loadNiftiFile called with:", file.name);
       setCurrentFile(file); // Save file for 3D rendering
+
+      // Clear previous overlay/segmentation data when loading new file
+      setPredictionMask(null);
+      setPredictionDimensions([0, 0, 0]);
+      setShowOverlay(false);
+      setSegmentationSummary(null);
+
       const arrayBuffer = await file.arrayBuffer();
       console.log("🟢 ArrayBuffer loaded, size:", arrayBuffer.byteLength);
       
@@ -247,7 +271,16 @@ const DicomViewer: React.FC = () => {
       
       const header = nifti.readHeader(arrayBuffer);
       const dims = [header.dims[1], header.dims[2], header.dims[3]];
-      console.log("🟢 Dimensions:", dims);
+      
+      // Read pixel dimensions (mm) if available, otherwise default to 1mm
+      const pixDims = (header as any).pixDims || [1, 1, 1, 1];
+      // Since we rotate the image (swap X/Y), we must swap the spacing too
+      // Original: dims[1]=x, dims[2]=y
+      // Rotated: x becomes y, y becomes x
+      const spacing = [pixDims[2], pixDims[1], pixDims[3]];
+      setPixelSpacing(spacing as [number, number, number]);
+
+      console.log("🟢 Dimensions:", dims, "Spacing:", spacing);
       
       const dataBuffer = nifti.readImage(header, arrayBuffer);
 
@@ -310,11 +343,7 @@ const DicomViewer: React.FC = () => {
           const uploadResult = await uploadNiftiFile(file);
           console.log("🟢 File uploaded to backend:", uploadResult);
           setMriId(uploadResult.mri_id);
-          // Update all windows with the new mriId
-          setDynamicWindows(prev => prev.map(window => ({
-            ...window,
-            mriId: uploadResult.mri_id
-          })));
+
         } catch (uploadError) {
           console.error("❌ Failed to upload file to backend:", uploadError);
         }
@@ -544,109 +573,35 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  // Per-window prediction function
-  const runWindowPrediction = async (windowId: number) => {
-    const window = dynamicWindows.find(w => w.id === windowId);
-    if (!window || !window.mriId) {
-      alert("No MRI loaded for this window.");
+  const downloadSegmentationAsNifti = async () => {
+    if (!mriId) {
+      alert("No segmentation data available to download.");
       return;
     }
 
-    // Set window to predicting state
-    updateWindowState(windowId, { isPredicting: true });
-
     try {
-      console.log(`🟢 Running prediction for window ${windowId} with ${window.selectedModel.toUpperCase()} model`);
-      
-      // Step 1: Detect modality
-      console.log('Step 1: Detecting modality...');
-      await detectModality(window.mriId);
-
-      // Step 2: Run segmentation
-      console.log(`Step 2: Running segmentation with ${window.selectedModel} model...`);
-      const segResult = await runSegmentation(window.mriId, window.selectedModel);
-      
-      console.log('Segmentation result:', segResult);
-
-      // Step 3: Download and load the mask for this window
-      console.log('Step 3: Downloading segmentation mask...');
-      const maskData = await downloadSegmentationMaskForWindow(window.mriId);
-
-      // Update window with segmentation data
-      updateWindowState(windowId, {
-        segmentationData: maskData.data,
-        segmentationDimensions: maskData.dimensions,
-        isPredicting: false
-      });
-
-      console.log(`✅ Prediction complete for window ${windowId} using ${window.selectedModel.toUpperCase()}`);
-      
-      // Show success modal with summary
-      setSegmentationSummary(segResult.summary);
-      setShowSuccessModal(true);
-
-    } catch (error: any) {
-      console.error(`❌ Prediction failed for window ${windowId}:`, error);
-      alert(`Prediction failed: ${error.message}`);
-      updateWindowState(windowId, { isPredicting: false });
-    }
-  };
-
-  // Download segmentation mask for a specific window (doesn't update global state)
-  const downloadSegmentationMaskForWindow = async (mriId: number) => {
-    try {
+      const metadataResponse = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation`);
+      const metadata = await metadataResponse.json();
+      const filename = metadata.file_name;
       const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segmentation/data`);
-
-      if (!response.ok) {
-        throw new Error('Failed to download segmentation mask');
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-
-      const header = nifti.readHeader(arrayBuffer);
-      const dims = [header.dims[1], header.dims[2], header.dims[3]];
-      console.log("🟢 Segmentation dimensions:", dims);
-
-      const dataBuffer = nifti.readImage(header, arrayBuffer);
-
-      let data;
-      const datatype = (header as any).datatype || 4;
-      if (datatype === 4) {
-        const int16Data = new Int16Array(dataBuffer);
-        data = new Float32Array(int16Data);
-      } else if (datatype === 8) {
-        const int32Data = new Int32Array(dataBuffer);
-        data = new Float32Array(int32Data);
-      } else if (datatype === 16) {
-        data = new Float32Array(dataBuffer);
-      } else {
-        const int16Data = new Int16Array(dataBuffer);
-        data = new Float32Array(int16Data);
-      }
-
-      // Apply same rotation as original image
-      const [x, y, z] = dims;
-      const rotated = new Float32Array(data.length);
-      for (let k = 0; k < z; k++) {
-        for (let j = 0; j < y; j++) {
-          for (let i = 0; i < x; i++) {
-            const originalIndex = i + j * x + k * x * y;
-            const newI = j;
-            const newJ = x - 1 - i;
-            const newK = k;
-            const flippedJ = y - 1 - newJ;
-            const newIndex = newI + flippedJ * y + newK * y * x;
-            rotated[newIndex] = data[originalIndex];
-          }
-        }
-      }
-
-      console.log('🟢 Segmentation mask loaded successfully');
       
-      return { data: rotated, dimensions: [y, x, z] as [number, number, number] };
+      if (!response.ok) {
+        throw new Error('Failed to download segmentation file');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+
+      console.log('✅ Segmentation file downloaded successfully:', filename);
     } catch (error) {
-      console.error('❌ Failed to load segmentation mask:', error);
-      throw error;
+      console.error('❌ Failed to download segmentation file:', error);
     }
   };
 
@@ -659,7 +614,7 @@ const DicomViewer: React.FC = () => {
     winWidth: number,
     zoom: number,
     pan: { x: number; y: number },
-    // Per-window overlay data
+    // Global overlay data
     windowShowOverlay: boolean = false,
     windowSegmentationData: Float32Array | null = null,
     windowSegmentationDimensions: [number, number, number] = [0, 0, 0]
@@ -938,45 +893,182 @@ const DicomViewer: React.FC = () => {
     const baseCircleRadius = 8 / zoom;
     
     measurements.filter(m => m.windowId === windowId).forEach((m) => {
+      // 1. Draw the main measurement line (Cyan with shadow)
       ctx.beginPath();
       ctx.moveTo(m.x1, m.y1);
       ctx.lineTo(m.x2, m.y2);
-      ctx.strokeStyle = '#00FF00';
-      ctx.lineWidth = baseLineWidth;
+      
+      // Shadow/Outline for visibility on white background
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = baseLineWidth + (2 / zoom); 
       ctx.stroke();
       
-          const dx = m.x2 - m.x1;
-          const dy = m.y2 - m.y1;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      ctx.fillStyle = '#00FF00';
-      ctx.font = `${baseFontSize}px system-ui`;
-      ctx.fillText(`${distance.toFixed(1)}px`, (m.x1 + m.x2) / 2 + 5 / zoom, (m.y1 + m.y2) / 2 - 5 / zoom);
+      // Main Cyan Line
+      ctx.strokeStyle = '#00FFFF'; // Cyan/Turquoise
+      ctx.lineWidth = baseLineWidth;
+      ctx.stroke();
+
+      // 2. Draw T-bars (End Caps)
+      const capSize = 10 / zoom; // Size of the T-bar
+      const dx = m.x2 - m.x1;
+      const dy = m.y2 - m.y1;
+      const angle = Math.atan2(dy, dx);
+      
+      // Function to draw T-cap
+      const drawCap = (x: number, y: number) => {
+        ctx.beginPath();
+        ctx.moveTo(
+          x - capSize * Math.sin(angle),
+          y + capSize * Math.cos(angle)
+        );
+        ctx.lineTo(
+          x + capSize * Math.sin(angle),
+          y - capSize * Math.cos(angle)
+        );
+        // Shadow
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.lineWidth = baseLineWidth + (2 / zoom);
+        ctx.stroke();
+        // Main Line
+        ctx.strokeStyle = '#00FFFF';
+        ctx.lineWidth = baseLineWidth;
+        ctx.stroke();
+      };
+
+      drawCap(m.x1, m.y1);
+      drawCap(m.x2, m.y2);
+
+      // 3. Calculate Real-World Distance (mm)
+      // A. Determine MRI dimensions for this view to calculate Scale
+      const [dim0, dim1, dim2] = dimensions; // [y, x, z]
+      let mriWidth = 1, mriHeight = 1;
+      let spacingX = 1, spacingY = 1;
+      const [s0, s1, s2] = pixelSpacing; // [y_spacing, x_spacing, z_spacing]
+
+      if (window.view === 'axial') {
+          mriWidth = dim1 || 1; mriHeight = dim0 || 1;
+          spacingX = s1 || 1; spacingY = s0 || 1;
+      } else if (window.view === 'coronal') {
+          mriWidth = dim1 || 1; mriHeight = dim2 || 1;
+          spacingX = s1 || 1; spacingY = s2 || 1;
+      } else if (window.view === 'sagittal') {
+          mriWidth = dim0 || 1; mriHeight = dim2 || 1;
+          spacingX = s0 || 1; spacingY = s2 || 1;
+      }
+
+      // B. Calculate Scale (must match renderViewToCanvas logic)
+      // scale = min(container / mri) * 0.9
+      const scale = Math.min(containerWidth / mriWidth, containerHeight / mriHeight) * 0.9;
+      
+      // C. Convert Canvas Pixels -> MRI Voxels -> Millimeters
+      // dx is in Canvas Pixels. dx / scale = MRI Voxels.
+      const distMm = Math.sqrt(
+        Math.pow((dx / scale) * spacingX, 2) + 
+        Math.pow((dy / scale) * spacingY, 2)
+      );
+      
+      const labelText = `${distMm.toFixed(1)} mm`;
+
+      // 4. Draw Label Box (Centered)
+      ctx.font = `bold ${baseFontSize}px "Consolas", "Roboto Mono", monospace`;
+      const textMetrics = ctx.measureText(labelText);
+      const padding = 4 / zoom;
+      const boxWidth = textMetrics.width + (padding * 2);
+      const boxHeight = baseFontSize * 1.4;
+      
+      const centerX = (m.x1 + m.x2) / 2;
+      const centerY = (m.y1 + m.y2) / 2;
+
+      // Semi-transparent background box
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.fillRect(
+        centerX - boxWidth / 2,
+        centerY - boxHeight / 2,
+        boxWidth,
+        boxHeight
+      );
+
+      // Text
+      ctx.fillStyle = '#00FFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, centerX, centerY);
     });
 
     // Draw only annotations for this window
     const windowAnnotations = annotations.filter(a => a.windowId === windowId);
     windowAnnotations.forEach((a) => {
+      // High-Vis Navy Marker
+      const markerColor = '#000080'; // Navy Blue
+      
+      // WHITE GLOW for MAXIMUM POP on dark backgrounds
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Thick Visible Ring
       ctx.beginPath();
       ctx.arc(a.x, a.y, baseCircleRadius, 0, Math.PI * 2);
-      ctx.fillStyle = a.color;
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = baseLineWidth;
+      ctx.strokeStyle = markerColor;
+      ctx.lineWidth = 3 / zoom; // Bolder
       ctx.stroke();
+      
+      // Center Dot
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, 3 / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = markerColor;
+      ctx.fill();
+      
+      ctx.shadowColor = 'transparent';
 
       // Draw text if hovered (need to find the actual index in the full annotations array)
       const fullIdx = annotations.indexOf(a);
       if (hoveredAnnotation === fullIdx && a.text) {
-        const textOffset = 12 / zoom;
-        const boxWidth = 100 / zoom;
-        const boxHeight = 24 / zoom;
-        const textPadding = 4 / zoom;
+        const padding = 8 / zoom;
+        const offset = 12 / zoom;
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.fillRect(a.x + textOffset, a.y - 20 / zoom, boxWidth, boxHeight);
-        ctx.fillStyle = '#fff';
-        ctx.font = `${baseFontSize}px system-ui`;
-        ctx.fillText(a.text, a.x + textOffset + textPadding, a.y - textPadding);
+        ctx.font = `500 ${baseFontSize}px "Inter", system-ui, -apple-system, sans-serif`;
+        const metrics = ctx.measureText(a.text);
+        const boxWidth = metrics.width + (padding * 2);
+        const boxHeight = baseFontSize * 2.2;
+        const boxX = a.x + offset;
+        const boxY = a.y - (boxHeight / 2);
+        const radius = 4 / zoom;
+
+        // Tooltip Shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = 8;
+        ctx.shadowOffsetY = 4;
+
+        // Tooltip Background (Dark Slate)
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 1 / zoom;
+
+        // Rounded Rect Path
+        ctx.beginPath();
+        ctx.moveTo(boxX + radius, boxY);
+        ctx.lineTo(boxX + boxWidth - radius, boxY);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + radius);
+        ctx.lineTo(boxX + boxWidth, boxY + boxHeight - radius);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY + boxHeight, boxX + boxWidth - radius, boxY + boxHeight);
+        ctx.lineTo(boxX + radius, boxY + boxHeight);
+        ctx.quadraticCurveTo(boxX, boxY + boxHeight, boxX, boxY + boxHeight - radius);
+        ctx.lineTo(boxX, boxY + radius);
+        ctx.quadraticCurveTo(boxX, boxY, boxX + radius, boxY);
+        ctx.closePath();
+        
+        ctx.fill();
+        ctx.shadowColor = 'transparent'; // clear shadow for text
+        ctx.stroke();
+
+        // Tooltip Text
+        ctx.fillStyle = '#f8fafc';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Draw at exact center of box
+        ctx.fillText(a.text, boxX + (boxWidth / 2), boxY + (boxHeight / 2) + (1 / zoom));
       }
     });
   };
@@ -1008,10 +1100,9 @@ const DicomViewer: React.FC = () => {
         window.windowWidth,
         window.zoomLevel,
         window.panOffset,
-        // Pass window-specific overlay data
-        window.showOverlay,
-        window.segmentationData,
-        window.segmentationDimensions
+        showOverlay,
+        predictionMask,
+        predictionDimensions
       );
       
       // Draw measurements and annotations on the overlay for this specific window
@@ -1121,7 +1212,7 @@ const DicomViewer: React.FC = () => {
   useEffect(() => {
     renderAllViews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows]);
+  }, [niftiData, flipH, flipV, measurements, annotations, mode, hoveredAnnotation, cursorPosition, dynamicWindows, showOverlay, predictionMask]);
 
   // Cleanup viewer windows on unmount
   useEffect(() => {
@@ -1212,12 +1303,6 @@ const DicomViewer: React.FC = () => {
             console.log("🟢 Demo files already exist in backend (S3), loading directly from backend...");
             uploadedMriId = existingFlair.id;
             setMriId(existingFlair.id);
-            
-            // Update all windows with the mriId
-            setDynamicWindows(prev => prev.map(window => ({
-              ...window,
-              mriId: existingFlair.id
-            })));
             
             // Fetch the flair file directly from backend (which gets it from S3)
             console.log(`Fetching flair file from backend (MRI ID: ${existingFlair.id})...`);
@@ -1799,15 +1884,62 @@ const DicomViewer: React.FC = () => {
         octx.beginPath();
         octx.moveTo(drawingRef.current.x, drawingRef.current.y);
         octx.lineTo(transformedX, transformedY);
-        octx.strokeStyle = '#00FF00';
+        
+        // Shadow
+        octx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        octx.lineWidth = (2 / zoom) + (2 / zoom);
+        octx.stroke();
+        
+        // Main Cyan Line
+        octx.strokeStyle = '#00FFFF';
         octx.lineWidth = 2 / zoom; // Keep line width constant
         octx.stroke();
         
         const dx = transformedX - drawingRef.current.x;
         const dy = transformedY - drawingRef.current.y;
-        octx.fillStyle = '#00FF00';
-        octx.font = `${12 / zoom}px system-ui`; // Keep font size constant
-        octx.fillText(`${Math.sqrt(dx*dx + dy*dy).toFixed(1)}px`, (drawingRef.current.x + transformedX)/2 + 5 / zoom, (drawingRef.current.y + transformedY)/2 - 5 / zoom);
+
+        // Calculate Real-World Distance (mm) for preview
+        // Scale calculation (same as main render)
+        const [dim0, dim1, dim2] = dimensions;
+        let mriWidth = 1, mriHeight = 1;
+        let spacingX = 1, spacingY = 1;
+        const [s0, s1, s2] = pixelSpacing;
+
+        if (selectedWindow.view === 'axial') {
+            mriWidth = dim1 || 1; mriHeight = dim0 || 1;
+            spacingX = s1 || 1; spacingY = s0 || 1;
+        } else if (selectedWindow.view === 'coronal') {
+            mriWidth = dim1 || 1; mriHeight = dim2 || 1;
+            spacingX = s1 || 1; spacingY = s2 || 1;
+        } else if (selectedWindow.view === 'sagittal') {
+            mriWidth = dim0 || 1; mriHeight = dim2 || 1;
+            spacingX = s0 || 1; spacingY = s2 || 1;
+        }
+
+        const scale = Math.min(containerWidth / mriWidth, containerHeight / mriHeight) * 0.9;
+        
+        const distMm = Math.sqrt(
+          Math.pow((dx / scale) * spacingX, 2) + 
+          Math.pow((dy / scale) * spacingY, 2)
+        );
+        
+        const labelText = `${distMm.toFixed(1)} mm`;
+
+        octx.font = `bold ${12 / zoom}px "Consolas", "Roboto Mono", monospace`;
+        const textMetrics = octx.measureText(labelText);
+        const boxWidth = textMetrics.width + (8 / zoom);
+        const boxHeight = (12 / zoom) * 1.4;
+        
+        const midX = (drawingRef.current.x + transformedX) / 2;
+        const midY = (drawingRef.current.y + transformedY) / 2;
+
+        octx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        octx.fillRect(midX - boxWidth/2, midY - boxHeight/2, boxWidth, boxHeight);
+
+        octx.fillStyle = '#00FFFF';
+        octx.textAlign = 'center';
+        octx.textBaseline = 'middle';
+        octx.fillText(labelText, midX, midY);
       } else if (mode === 'annotate'){
         renderAllViews();
         const octx = overlay.getContext('2d');
@@ -1839,14 +1971,26 @@ const DicomViewer: React.FC = () => {
         const transformedX = ((p.x - pan.x - centerX) / zoom) + centerX;
         const transformedY = ((p.y - pan.y - centerY) / zoom) + centerY;
         
-        // Draw preview circle (in image space coordinates)
+        // Draw preview circle (Navy Pop)
+        const markerColor = '#000080';
+        
+        octx.shadowColor = '#ffffff';
+        octx.shadowBlur = 10;
+        
+        // Thick Ring
         octx.beginPath();
-        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2); // Keep circle size constant
-        octx.fillStyle = '#FF8C00'; // Orange
-        octx.fill();
-        octx.strokeStyle = '#fff';
-        octx.lineWidth = 2 / zoom; // Keep line width constant
+        octx.arc(transformedX, transformedY, 8 / zoom, 0, Math.PI*2);
+        octx.strokeStyle = markerColor;
+        octx.lineWidth = 3 / zoom;
         octx.stroke();
+        
+        // Center Dot
+        octx.beginPath();
+        octx.arc(transformedX, transformedY, 3 / zoom, 0, Math.PI*2);
+        octx.fillStyle = markerColor;
+        octx.fill();
+        
+        octx.shadowColor = 'transparent';
       }
     };
 
@@ -1905,6 +2049,262 @@ const DicomViewer: React.FC = () => {
       window.removeEventListener('mouseup', onUp);
     };
   }, [mode, measurements, annotations, hoveredAnnotation, selectedWindowId, dynamicWindows]);
+
+    // --- Helpers for hotkeys (slice + zoom + window/view selection) ---
+  const getMaxSliceIndexForView = (view: ViewType) => {
+    if (view === "axial") return Math.max(0, dimensions[2] - 1);
+    if (view === "coronal") return Math.max(0, dimensions[1] - 1);
+    if (view === "sagittal") return Math.max(0, dimensions[0] - 1);
+    return 0;
+  };
+
+  const adjustSliceForSelectedWindow = (delta: number) => {
+    setDynamicWindows(prev =>
+      prev.map(w => {
+        if (w.id !== selectedWindowId || w.view === "3d") return w;
+        const maxSlice = getMaxSliceIndexForView(w.view);
+        const next = Math.min(maxSlice, Math.max(0, w.slice + delta));
+        return { ...w, slice: next };
+      })
+    );
+  };
+
+  const adjustZoomForSelectedWindow = (factor: number) => {
+    setDynamicWindows(prev =>
+      prev.map(w => {
+        if (w.id !== selectedWindowId || w.view === "3d") return w;
+        const nextZoom = Math.min(5, Math.max(0.2, w.zoomLevel * factor));
+        return { ...w, zoomLevel: nextZoom };
+      })
+    );
+  };
+
+  const selectWindowByIndex = (index: number) => {
+    // index is 0-based, hotkeys 1–4 are 1-based
+    if (index < 0 || index >= dynamicWindows.length) return;
+    const win = dynamicWindows[index];
+    setSelectedWindowId(win.id);
+  };
+
+  const cycleViewForSelectedWindow = () => {
+    const current = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!current) return;
+    const order: ViewType[] = ["axial", "coronal", "sagittal", "3d"];
+    const idx = order.indexOf(current.view);
+    const nextView = order[(idx + 1) % order.length];
+    changeWindowView(current.id, nextView);
+  };
+
+  const setViewForSelectedWindow = (view: ViewType) => {
+    const current = dynamicWindows.find(w => w.id === selectedWindowId);
+    if (!current) return;
+    changeWindowView(current.id, view);
+  };
+
+  // --- Global keyboard shortcuts / hotkeys ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept keys while typing in forms / inputs
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName.toLowerCase();
+        if (
+          tag === "input" ||
+          tag === "textarea" ||
+          (target as any).isContentEditable
+        ) {
+          return;
+        }
+      }
+
+      const key = e.key.toLowerCase();
+
+      // ==== Slice navigation & zoom ====
+      if (key === "arrowup") {
+        e.preventDefault();
+        adjustSliceForSelectedWindow(e.shiftKey ? +5 : +1);
+        return;
+      }
+      if (key === "arrowdown") {
+        e.preventDefault();
+        adjustSliceForSelectedWindow(e.shiftKey ? -5 : -1);
+        return;
+      }
+
+      // + / - zoom
+      if (key === "+" || key === "=") {
+        e.preventDefault();
+        adjustZoomForSelectedWindow(1.15);
+        return;
+      }
+      if (key === "-" || key === "_") {
+        e.preventDefault();
+        adjustZoomForSelectedWindow(1 / 1.15);
+        return;
+      }
+
+      // ==== Window selection (1–4) ====
+      if (key === "1") {
+        e.preventDefault();
+        selectWindowByIndex(0);
+        return;
+      }
+      if (key === "2") {
+        e.preventDefault();
+        selectWindowByIndex(1);
+        return;
+      }
+      if (key === "3") {
+        e.preventDefault();
+        selectWindowByIndex(2);
+        return;
+      }
+      if (key === "4") {
+        e.preventDefault();
+        selectWindowByIndex(3);
+        return;
+      }
+
+      // ==== View switching on selected window ====
+      if (key === "x") {
+        // axial
+        e.preventDefault();
+        setViewForSelectedWindow("axial");
+        return;
+      }
+      if (key === "y") {
+        // coronal
+        e.preventDefault();
+        setViewForSelectedWindow("coronal");
+        return;
+      }
+      if (key === "g") {
+        // saGittal
+        e.preventDefault();
+        setViewForSelectedWindow("sagittal");
+        return;
+      }
+      if (key === "v") {
+        // Volume render (3D)
+        e.preventDefault();
+        setViewForSelectedWindow("3d");
+        return;
+      }
+
+      // Optional: cycle views with Tab
+      if (key === "tab") {
+        e.preventDefault();
+        cycleViewForSelectedWindow();
+        return;
+      }
+
+      // ==== Overlay + prediction ====
+      if (key === "o") {
+        if (predictionMask) {
+          e.preventDefault();
+          setShowOverlay(prev => !prev);
+        }
+        return;
+      }
+
+      if (key === "enter" && (e.ctrlKey || e.metaKey)) {
+        // Ctrl/Cmd + Enter to run model prediction
+        if (!isPredicting && niftiData && mriId) {
+          e.preventDefault();
+          handlePrediction();
+        }
+        return;
+      }
+
+      // ==== Interaction modes ====
+      if (key === "s") {
+        e.preventDefault();
+        activateInteractionMode("scroll");
+        return;
+      }
+      if (key === "z") {
+        e.preventDefault();
+        activateInteractionMode("zoom");
+        return;
+      }
+      if (key === "p") {
+        e.preventDefault();
+        activateInteractionMode("pan");
+        return;
+      }
+      if (key === "b") {
+        e.preventDefault();
+        activateInteractionMode("brightness");
+        return;
+      }
+      if (key === "c") {
+        e.preventDefault();
+        activateInteractionMode("contrast");
+        return;
+      }
+
+      // ==== Measuring / annotations ====
+      if (key === "m") {
+        e.preventDefault();
+        activateMeasuringMode("measure");
+        return;
+      }
+      if (key === "a") {
+        e.preventDefault();
+        activateMeasuringMode("annotate");
+        return;
+      }
+      if (key === "e") {
+        e.preventDefault();
+        activateMeasuringMode("erase");
+        return;
+      }
+
+      // ==== Reset ====
+      if (key === "escape") {
+        e.preventDefault();
+        if (showHotkeyLegend) {
+          setShowHotkeyLegend(false);
+        } else {
+          activateInteractionMode(null);
+          activateMeasuringMode("none");
+        }
+        return;
+      }
+
+      if (key === "r") {
+        // Global reset (same as bottom-right button)
+        e.preventDefault();
+        resetView();
+        return;
+      }
+
+      // ==== Help / Hotkey Legend ====
+      // Check for ? (Shift + /) or H
+      // Note: e.key might be "?" directly or "/" with shiftKey depending on browser/OS
+      const isQuestionMark = e.key === "?" || (e.code === "Slash" && e.shiftKey);
+      
+      if (isQuestionMark || key === "h") {
+        e.preventDefault();
+        setShowHotkeyLegend(prev => !prev);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    dynamicWindows,
+    selectedWindowId,
+    dimensions,
+    predictionMask,
+    isPredicting,
+    niftiData,
+    mriId,
+    changeWindowView,
+    showHotkeyLegend,
+  ]);
+
 
   // Set cursor based on active mode
   useEffect(() => {
@@ -2206,6 +2606,42 @@ const DicomViewer: React.FC = () => {
             )}
 
             <button
+              onClick={downloadSegmentationAsNifti}
+              style={{
+                width: '100%',
+                flex: 1,
+                padding: '12px',
+                background: 'rgba(59, 130, 246, 0.2)',
+                border: '1px solid rgba(59, 130, 246, 0.4)',
+                borderRadius: '8px',
+                color: 'rgb(59, 130, 246)',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                marginBottom: '8px'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.3)';
+                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.6)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(59, 130, 246, 0.2)';
+                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download as NIFTI File
+            </button>
+            <button
               onClick={() => setShowSuccessModal(false)}
               style={{
                 width: '100%',
@@ -2458,7 +2894,7 @@ const DicomViewer: React.FC = () => {
                     : 'none',
                   cursor: mode === 'measure' ? 'crosshair' :
                          mode === 'annotate' ? 'cell' :
-                         mode === 'erase' ? 'not-allowed' :
+                         mode === 'erase' ? "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 24 24\" stroke-width=\"1\" stroke-linejoin=\"round\"><path d=\"M21.4 8.8 L15.2 2.6 c-0.8-0.8-2-0.8-2.8 0 L6.2 9.6 L13.8 17.2 L21.4 8.8 Z\" fill=\"%23f3f4f6\" stroke=\"%239ca3af\"/><path d=\"M6.2 9.6 L2.6 12.4 c-0.8 0.8 -0.8 2 0 2.8 L8.8 21.4 c0.8 0.8 2 0.8 2.8 0 L13.8 17.2 L6.2 9.6 Z\" fill=\"%23ffcdd2\" stroke=\"%23e57373\"/></svg>') 6 20, auto" :
                          interactionMode === 'pan' ? 'grab' :
                          'default', // Don't use 'pointer' - let measurement modes take precedence
                   transition: 'all 0.2s ease',
@@ -2509,109 +2945,6 @@ const DicomViewer: React.FC = () => {
                     <option value="sagittal">Sagittal</option>
                     <option value="3d">3D Render</option>
                   </select>
-
-                  {/* Prediction controls - center area */}
-                  {window.mriId && (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {/* Model selector */}
-                      <select
-                        value={window.selectedModel}
-                        onChange={(e) => updateWindowState(window.id, { selectedModel: e.target.value as 'pspnet' | 'unet' })}
-                        disabled={window.isPredicting}
-                        style={{
-                          background: 'rgba(30, 41, 59, 0.9)',
-                          backdropFilter: 'blur(8px)',
-                          WebkitBackdropFilter: 'blur(8px)',
-                          color: '#e2e8f0',
-                          border: '1px solid rgba(139, 92, 246, 0.3)',
-                          borderRadius: 6,
-                          padding: '4px 8px',
-                          fontSize: 11,
-                          fontWeight: 600,
-                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
-                          outline: 'none',
-                          opacity: window.isPredicting ? 0.5 : 1,
-                        }}
-                      >
-                        <option value="pspnet">PSPNet</option>
-                        <option value="unet">U-Net</option>
-                      </select>
-
-                      {/* Run Prediction button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          runWindowPrediction(window.id);
-                        }}
-                        disabled={window.isPredicting}
-                        style={{
-                          background: window.isPredicting 
-                            ? 'rgba(107, 114, 128, 0.2)' 
-                            : 'rgba(139, 92, 246, 0.2)',
-                          backdropFilter: 'blur(8px)',
-                          WebkitBackdropFilter: 'blur(8px)',
-                          border: window.isPredicting 
-                            ? '1px solid rgba(107, 114, 128, 0.4)' 
-                            : '1px solid rgba(139, 92, 246, 0.4)',
-                          borderRadius: 6,
-                          color: window.isPredicting ? '#9ca3af' : '#c4b5fd',
-                          cursor: window.isPredicting ? 'not-allowed' : 'pointer',
-                          padding: '4px 12px',
-                          fontSize: 11,
-                          fontWeight: 600,
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          transition: 'all 0.2s ease',
-                        }}
-                      >
-                        {window.isPredicting ? (
-                          <>
-                            <span className="spinner" style={{
-                              width: 12,
-                              height: 12,
-                              border: '2px solid rgba(156, 163, 175, 0.3)',
-                              borderTop: '2px solid #9ca3af',
-                              borderRadius: '50%',
-                              animation: 'spin 1s linear infinite',
-                            }} />
-                            Running...
-                          </>
-                        ) : (
-                          '▶ Predict'
-                        )}
-                      </button>
-
-                      {/* Show Overlay toggle */}
-                      {window.segmentationData && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            updateWindowState(window.id, { showOverlay: !window.showOverlay });
-                          }}
-                          style={{
-                            background: window.showOverlay 
-                              ? 'rgba(34, 197, 94, 0.2)' 
-                              : 'rgba(148, 163, 184, 0.2)',
-                            backdropFilter: 'blur(8px)',
-                            WebkitBackdropFilter: 'blur(8px)',
-                            border: window.showOverlay 
-                              ? '1px solid rgba(34, 197, 94, 0.4)' 
-                              : '1px solid rgba(148, 163, 184, 0.4)',
-                            borderRadius: 6,
-                            color: window.showOverlay ? '#86efac' : '#cbd5e1',
-                            cursor: 'pointer',
-                            padding: '4px 12px',
-                            fontSize: 11,
-                            fontWeight: 600,
-                            transition: 'all 0.2s ease',
-                          }}
-                        >
-                          {window.showOverlay ? '👁️ Hide' : '👁️ Show'}
-                        </button>
-                      )}
-                    </div>
-                  )}
 
                   {/* Delete button */}
                   {dynamicWindows.length > 1 && (
@@ -3352,6 +3685,34 @@ const DicomViewer: React.FC = () => {
     >
       {showOverlay ? 'Hide Overlay' : 'Show Overlay'}
     </button>
+
+    {/* Download Segmentation Button */}
+    <button
+      onClick={downloadSegmentationAsNifti}
+      disabled={!predictionMask}
+      style={{
+        background: predictionMask ? 'rgba(59,130,246,0.6)' : 'rgba(51,65,85,0.6)',
+        border: predictionMask ? '1px solid rgba(59,130,246,0.6)' : '1px solid rgba(148,163,184,0.3)',
+        borderRadius: '6px',
+        color: '#fff',
+        padding: '10px',
+        fontWeight: 600,
+        cursor: predictionMask ? 'pointer' : 'not-allowed',
+        opacity: predictionMask ? 1 : 0.5,
+        transition: 'all 0.2s ease',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download Segmentation
+    </button>
         </div>
 )}
 
@@ -3359,13 +3720,252 @@ const DicomViewer: React.FC = () => {
       </div>
       </div>
 
+      {/* Hotkey Legend Modal */}
+      {showHotkeyLegend && (
+        <div
+          onClick={() => setShowHotkeyLegend(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '40px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#1e293b',
+              border: '1px solid #334155',
+              borderRadius: '8px',
+              width: '100%',
+              maxWidth: '1100px',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding: '20px 32px',
+              borderBottom: '1px solid #334155',
+              background: '#0f172a',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="1.5">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M9 16h6" />
+                </svg>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 500, color: '#f8fafc', letterSpacing: '0.01em' }}>Keyboard Shortcuts Reference</h2>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}></p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowHotkeyLegend(false)}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  padding: '8px',
+                  cursor: 'pointer',
+                  color: '#94a3b8',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#334155';
+                  e.currentTarget.style.color = '#f1f5f9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = '#94a3b8';
+                }}
+              >
+                <span style={{ fontSize: '13px', marginRight: '6px' }}>Close</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div style={{
+              padding: '0',
+              overflowY: 'auto',
+              background: '#1e293b',
+              display: 'flex',
+              height: '100%',
+            }}>
+              {/* Column 1 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px', 
+                borderRight: '1px solid #334155',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                {/* Navigation Section */}
+                <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Slice Navigation
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['↑']} description="Next slice" />
+                    <HotkeyRow keys={['↓']} description="Previous slice" />
+                    <HotkeyRow keys={['Shift', '↑/↓']} description="Jump 5 slices" />
+                    <HotkeyRow keys={['+']} description="Zoom in" />
+                    <HotkeyRow keys={['-']} description="Zoom out" />
+                  </div>
+                </div>
+
+                {/* System Controls */}
+                <div style={{ borderTop: '1px solid #334155', paddingTop: '32px' }}>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    System Controls
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['R']} description="Reset all views" />
+                    <HotkeyRow keys={['Esc']} description="Cancel tool / action" />
+                    <HotkeyRow keys={['?']} description="Toggle shortcuts" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Column 2 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px', 
+                borderRight: '1px solid #334155',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                {/* Viewport Management */}
+                <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Viewport Management
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['1', '2', '3', '4']} description="Select active viewport" />
+                    <HotkeyRow keys={['X']} description="Set Axial view" />
+                    <HotkeyRow keys={['Y']} description="Set Coronal view" />
+                    <HotkeyRow keys={['G']} description="Set Sagittal view" />
+                    <HotkeyRow keys={['V']} description="Set 3D Volume view" />
+                    <HotkeyRow keys={['Tab']} description="Cycle view mode" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Column 3 */}
+              <div style={{ 
+                flex: 1, 
+                padding: '32px',
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '32px' 
+              }}>
+                 {/* Tools & Analysis */}
+                 <div>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Tools & Analysis
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['S']} description="Scroll tool" />
+                    <HotkeyRow keys={['Z']} description="Zoom tool" />
+                    <HotkeyRow keys={['P']} description="Pan tool" />
+                    <HotkeyRow keys={['B']} description="Window/Level (Brightness)" />
+                    <HotkeyRow keys={['C']} description="Window Width (Contrast)" />
+                  </div>
+                </div>
+
+                {/* Annotation & AI */}
+                <div style={{ borderTop: '1px solid #334155', paddingTop: '32px' }}>
+                  <h3 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid #334155',
+                    paddingBottom: '8px',
+                  }}>
+                    Annotation & AI
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <HotkeyRow keys={['M']} description="Linear Measurement" />
+                    <HotkeyRow keys={['A']} description="Point Annotation" />
+                    <HotkeyRow keys={['E']} description="Eraser" />
+                    <div style={{ height: '8px' }} />
+                    <HotkeyRow keys={['Ctrl', 'Enter']} description="Run Segmentation Model" />
+                    <HotkeyRow keys={['O']} description="Toggle Segmentation Overlay" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reset Button - Bottom Right */}
       <button
         onClick={resetView}
         title="Reset view to default"
         style={{
           position: 'fixed',
-          bottom: 20,
+          bottom: 60,
           right: 20,
           zIndex: 50,
           background: 'rgba(59, 130, 246, 0.4)',
@@ -3381,8 +3981,10 @@ const DicomViewer: React.FC = () => {
           transition: 'all 0.2s ease',
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'center',
           gap: '6px',
           boxShadow: '0 4px 16px 0 rgba(59, 130, 246, 0.3)',
+          width: '140px',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = 'rgba(59, 130, 246, 0.6)';
@@ -3402,6 +4004,55 @@ const DicomViewer: React.FC = () => {
           <path d="M3 21v-5h5"/>
         </svg>
         Reset View
+      </button>
+
+      {/* Hotkey Legend Button - Bottom Right (Under Reset) */}
+      <button
+        onClick={() => setShowHotkeyLegend(true)}
+        title="Keyboard Shortcuts (Press ? or H)"
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          zIndex: 50,
+          background: 'rgba(30, 41, 59, 0.6)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          border: '1px solid rgba(148, 163, 184, 0.3)',
+          borderRadius: '8px',
+          padding: '8px 16px',
+          cursor: 'pointer',
+          color: '#cbd5e1',
+          fontSize: '12px',
+          fontWeight: 500,
+          transition: 'all 0.2s ease',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+          width: '140px',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(51, 65, 85, 0.8)';
+          e.currentTarget.style.color = '#f1f5f9';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(30, 41, 59, 0.6)';
+          e.currentTarget.style.color = '#cbd5e1';
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M9 16h6" />
+        </svg>
+        <span>Shortcuts</span>
+        <span style={{
+          background: 'rgba(255, 255, 255, 0.1)',
+          padding: '1px 5px',
+          borderRadius: '3px',
+          fontSize: '10px',
+          marginLeft: 'auto',
+        }}>?</span>
       </button>
 
       {viewerWindows.map(window =>(

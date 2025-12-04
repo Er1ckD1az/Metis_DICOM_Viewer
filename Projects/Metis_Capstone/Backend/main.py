@@ -661,6 +661,7 @@ async def get_segmentation(mri_id: int):
             return {
                 'segmentation_id': row[0],
                 'segmentation_path': row[1],
+                'file_name': row[1].split('/')[-1],
                 'date_created': row[2],
                 'summary': {
                     'background_voxels': row[3],

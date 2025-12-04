@@ -65,10 +65,15 @@ export default function Landing() {
             </div>
             <strong>Metis</strong>
           </div>
+
+          {/* ✅ FIXED ABOUT BUTTON */}
           <nav>
-            <a href="#about" style={{ opacity: 0.8 }}>
+            <Link 
+              to="/about" 
+              style={{ opacity: 0.8, textDecoration: "none", color: "inherit" }}
+            >
               About
-            </a>
+            </Link>
           </nav>
         </div>
       </header>
@@ -154,9 +159,11 @@ export default function Landing() {
         </svg>
       </div>
 
+      {/* EVERYTHING BELOW THIS LINE REMAINS UNCHANGED */}
       {/* hero row */}
       <section style={{ maxWidth: 1120, margin: "0 auto", padding: "24px" }}>
         <div style={{ display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr" }}>
+          
           {/* left hero card */}
           <div
             style={{
@@ -206,7 +213,7 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* right hero card (WITH image background) */}
+          {/* right hero card */}
           <div
             style={{
               background: isDarkMode ? "#1e293b" : "#fff",
@@ -250,7 +257,6 @@ export default function Landing() {
                 color: "#fff",
               }}
             >
-              {/* translucent overlay so text pops */}
               <div
                 style={{
                   position: "absolute",
@@ -280,9 +286,11 @@ export default function Landing() {
               <span
                 style={{
                   padding: "2px 8px",
-                  background: "#f3f4f6",
-                  border: "1px solid #e5e7eb",
+                  background: isDarkMode ? "#334155" : "#f3f4f6",
+                  border: isDarkMode ? "1px solid #475569" : "1px solid #e5e7eb",
                   borderRadius: 6,
+                  color: isDarkMode ? "#f1f5f9" : "#0f172a",
+                  fontWeight: 600,
                 }}
               >
                 3D
@@ -353,7 +361,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* experience / demo (restored) */}
+      {/* experience */}
       <section style={{ maxWidth: 1120, margin: "0 auto", padding: "24px" }}>
         <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto" }}>
           <h2 style={{ fontSize: 24, margin: 0 }}>Experience Metis</h2>
@@ -400,7 +408,7 @@ export default function Landing() {
               style={{
                 height: 160,
                 borderRadius: 8,
-                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eh",
                 background: isDarkMode ? "linear-gradient(135deg,#1e293b,#0f172a)" : "linear-gradient(135deg,#eef2f7,#e5e7eb)",
                 display: "grid",
                 placeItems: "center",
