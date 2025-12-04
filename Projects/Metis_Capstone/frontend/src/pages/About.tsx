@@ -1,20 +1,19 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 
-// --- PASTE YOUR DATA HERE ---
 const teamMembers = [
   {
     id: "brooks",
     name: "Brooks",
-    role: "Team Member", // You can change this to specific roles like "Backend Lead"
+    role: "Team Member",
     bio: "Brooks Schafer is from Baton Rouge and has attended Southeastern since the fall of 2019. He is graduating in December 2025 with a degree in Computer Science and a concentration in Data Science. Once graduating, he plans to pursue a career in data analytics. Outside of computer science, he enjoys playing music and video games.",
-    image: "/images/Brooks.png" // Place image in 'public' folder and put name here
+    image: "/images/Brooks.png"
   },
   {
     id: "erick",
     name: "Erick",
     role: "Team Member",
-    bio: "I'm Erick, group leader of the Metis. I began my journey at SELU in 2022 and I'll be leaving December 2025. Since I began, I've been developing my programming skills and recently I fell in love with neuroscience. Specifically neuroimaging, hence the creation of this project. I hope to continue my work in the medical field one day!",
+    bio: "I'm Erick, group leader of Metis. I began my journey at SELU in 2022 and I'll be leaving December 2025. Since I began, I've been developing my programming skills and recently I fell in love with neuroscience. Specifically neuroimaging, hence the creation of this project. I hope to continue my work in the medical field one day!",
     image: "/images/Erick.jpg"
   },
   {
@@ -40,9 +39,16 @@ const teamMembers = [
   }
 ];
 
-// --- REUSABLE CARD COMPONENT ---
-// This handles the hover effects and styling for every person automatically
-const TeamCard = ({ member, isDarkMode }) => {
+
+type TeamMember = {
+  id: string;
+  name: string;
+  role: string;
+  bio: string;
+  image: string;
+};
+
+const TeamCard = ({ member, isDarkMode }: { member: TeamMember; isDarkMode: boolean }) => {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -60,29 +66,27 @@ const TeamCard = ({ member, isDarkMode }) => {
         transform: isHovered ? "translateY(-5px)" : "translateY(0)",
         transition: "all 0.3s ease",
         border: isDarkMode ? "1px solid #334155" : "1px solid #e2e8f0",
-        height: "100%", 
+        height: "100%",
         display: "flex",
         flexDirection: "column",
         alignItems: "center"
       }}
     >
-      {/* Image Container */}
       <div
         style={{
           width: 120,
           height: 120,
           marginBottom: 16,
-          borderRadius: "50%", // Makes image circular
+          borderRadius: "50%",
           overflow: "hidden",
           border: isDarkMode ? "3px solid #64748b" : "3px solid #e2e8f0",
-          background: "#ccc" // Fallback color if image fails
+          background: "#ccc"
         }}
       >
-        {/* If you have the image, it renders here. If not, it shows a placeholder initial */}
         {member.image ? (
-          <img 
-            src={member.image} 
-            alt={member.name} 
+          <img
+            src={member.image}
+            alt={member.name}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
           />
         ) : (
@@ -92,17 +96,14 @@ const TeamCard = ({ member, isDarkMode }) => {
         )}
       </div>
 
-      {/* Name */}
       <h3 style={{ margin: "0 0 4px 0", fontSize: "1.25rem", color: isDarkMode ? "#f1f5f9" : "#0f172a" }}>
         {member.name}
       </h3>
 
-      {/* Role */}
       <span style={{ fontSize: "0.85rem", color: isDarkMode ? "#94a3b8" : "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>
         {member.role}
       </span>
 
-      {/* Bio Paragraph */}
       <p style={{ fontSize: "0.95rem", lineHeight: "1.5", color: isDarkMode ? "#cbd5e1" : "#475569", margin: 0 }}>
         {member.bio}
       </p>
@@ -130,7 +131,6 @@ export default function About() {
         paddingBottom: 60,
       }}
     >
-      {/* --- HEADER --- */}
       <header
         style={{
           background: isDarkMode ? "#1e293b" : "#ffffff",
@@ -159,16 +159,14 @@ export default function About() {
             gap: "8px"
           }}
         >
-          <span>⬅</span> Home
+          <span>←</span> Home
         </Link>
 
         <div style={{ fontSize: 24, fontWeight: 700 }}>About <span style={{color: "#6366f1"}}>Metis</span></div>
       </header>
 
-      {/* --- MAIN CONTENT --- */}
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "40px 24px" }}>
-        
-        {/* Intro Text (Optional - looks good for presentations) */}
+
         <div style={{ textAlign: "center", marginBottom: 50 }}>
           <h1 style={{ fontSize: "2.5rem", marginBottom: "16px" }}>Meet the Team</h1>
           <p style={{ fontSize: "1.1rem", color: isDarkMode ? "#94a3b8" : "#64748b", maxWidth: 600, margin: "0 auto" }}>
@@ -176,11 +174,10 @@ export default function About() {
           </p>
         </div>
 
-        {/* TOP ROW (3 People) */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", // Responsive Grid
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
             gap: 30,
             marginBottom: 30,
           }}
@@ -190,13 +187,12 @@ export default function About() {
           ))}
         </div>
 
-        {/* BOTTOM ROW (2 People - Centered) */}
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
             gap: 30,
-            maxWidth: 700, // Constrain width so 2 cards sit nicely in center
+            maxWidth: 700,
             margin: "0 auto"
           }}
         >
