@@ -15,14 +15,9 @@ import io
 import numpy as np
 from typing import List, Optional
 from pathlib import Path
+from gradio_client import Client, handle_file
+from inference import detect_modality_from_filename
 
-# Import segmentation model
-from inference import (
-    BraTSSegmentationModel,
-    detect_modality_from_filename,
-    find_sibling_files,
-    load_all_modalities
-)
 
 class MRI(BaseModel):
     id: int
@@ -64,7 +59,7 @@ class ModalityDetectionResponse(BaseModel):
     mri_id: int
     file_name: str
     detected_modality: str
-    sibling_files: dict  # {modality: file_name}
+    sibling_files: dict
 
 
 class SegmentationResponse(BaseModel):
@@ -72,34 +67,33 @@ class SegmentationResponse(BaseModel):
     segmentation_id: int
     message: str
     segmentation_path: str
-    summary: dict  # Statistics about the segmentation
+    summary: dict
 
 
-# Global model instance (loaded once)
-segmentation_model = None
+#Global Gradio client
+gradio_client = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global segmentation_model
+    global gradio_client
 
-    # Initialize database
     init_database()
 
-    # Load segmentation model from S3
-    model_path = os.getenv('MODEL_CHECKPOINT_PATH')
-    if model_path:
-        print(f"\nLoading segmentation model from: {model_path}")
-        try:
-            segmentation_model = BraTSSegmentationModel(model_path)
-            print("Segmentation model loaded successfully\n")
-        except Exception as e:
-            print(f"Failed to load segmentation model: {e}")
-            print("Segmentation endpoints will not be available\n")
+    #Initialize Gradio client for HF Space
+    hf_space = os.getenv('HF_SPACE_URL', 'EdTheProgrammer/Metis-DICOM-Backend')
+    print(f"\n Initializing Gradio client for HF Space: {hf_space}")
+    try:
+        gradio_client = Client(hf_space)
+        print(" Gradio client initialized successfully")
+        print("Segmentation will be handled by HuggingFace Space\n")
+    except Exception as e:
+        print(f"  Failed to initialize Gradio client: {e}")
+        print("Segmentation endpoints may not work properly\n")
 
     yield
 
-    # Shutdown: clear data
+    #On shutdown clear data
     print("Application shutting down... clearing all data")
     clear_db_and_cloud()
 
@@ -139,7 +133,7 @@ def init_database():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # Main MRI table
+            #Main MRI table
             cursor.execute("""
                            CREATE TABLE IF NOT EXISTS dicom_mri_db
                            (
@@ -168,7 +162,7 @@ def init_database():
                                );
                            """)
 
-            # Segmentation results table
+            #Segmentation results table with model_type
             cursor.execute("""
                            CREATE TABLE IF NOT EXISTS segmentations
                            (
@@ -191,7 +185,11 @@ def init_database():
                                background_voxels INTEGER,
                                necrotic_voxels INTEGER,
                                edema_voxels INTEGER,
-                               enhancing_voxels INTEGER
+                               enhancing_voxels INTEGER,
+                               model_type VARCHAR
+                           (
+                               50
+                           ) DEFAULT 'pspnet'
                                );
                            """)
 
@@ -249,7 +247,6 @@ def upload_to_s3(file_data: bytes, file_name: str):
 
 
 def download_from_s3(file_name: str) -> bytes:
-    #Download file from S3 and return as bytes
     response = s3_client.get_object(Bucket=S3_BUCKET, Key=file_name)
     return response['Body'].read()
 
@@ -267,7 +264,6 @@ def clear_db_and_cloud():
                 except:
                     pass
 
-            # Also delete segmentation files
             cursor.execute("SELECT segmentation_path FROM segmentations")
             seg_paths = cursor.fetchall()
             for seg_path in seg_paths:
@@ -285,9 +281,9 @@ def clear_db_and_cloud():
     finally:
         conn.close()
 
+
 @app.post("/mri", response_model=MRIUploadResponse)
 async def upload_mri(file: UploadFile = File(...)):
-    #Upload a single MRI file
     if not file.filename.lower().endswith(('.nii', '.nii.gz')):
         raise HTTPException(status_code=400, detail="Only .nii and .nii.gz files are accepted")
 
@@ -314,7 +310,6 @@ async def upload_mri(file: UploadFile = File(...)):
 
 @app.get("/mri", response_model=List[MRIResponse])
 async def get_all_mri_metadata():
-    #Get all MRI metadata
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -336,7 +331,6 @@ async def get_all_mri_metadata():
 
 @app.get("/mri/{mri_id}", response_model=MRIResponse)
 async def get_mri_metadata_by_id(mri_id: int):
-    #Get MRI metadata by ID
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -359,7 +353,6 @@ async def get_mri_metadata_by_id(mri_id: int):
 
 @app.get("/mri/{mri_id}/data")
 async def get_mri_by_id(mri_id: int):
-    #Download MRI file by ID
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -387,7 +380,6 @@ async def get_mri_by_id(mri_id: int):
 
 @app.delete("/mri/{mri_id}")
 async def delete_mri_by_id(mri_id: int):
-    #Delete MRI by ID
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -405,6 +397,7 @@ async def delete_mri_by_id(mri_id: int):
     finally:
         conn.close()
 
+
 @app.post("/mri/{mri_id}/detect", response_model=ModalityDetectionResponse)
 async def detect_modality(mri_id: int):
     conn = get_db_connection()
@@ -420,7 +413,6 @@ async def detect_modality(mri_id: int):
     finally:
         conn.close()
 
-    # Detect modality
     detected_modality = detect_modality_from_filename(file_name)
 
     if not detected_modality:
@@ -430,33 +422,29 @@ async def detect_modality(mri_id: int):
                    f"Expected format: patientID_modality.nii[.gz] where modality is one of: flair, t1, t1ce, t2"
         )
 
-    # Extract patient ID from filename
-    patient_id = file_name.rsplit('_', 1)[0]  # e.g., "BraTS20_Validation_001"
-    
-    # Check S3/database for all 4 modality files
+    patient_id = file_name.rsplit('_', 1)[0]
     modalities = ['flair', 't1', 't1ce', 't2']
     sibling_files = {}
     missing = []
-    
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             for modality in modalities:
-                # Try both .nii and .nii.gz extensions
                 for ext in ['.nii.gz', '.nii']:
                     expected_filename = f"{patient_id}_{modality}{ext}"
                     cursor.execute("SELECT file_name FROM dicom_mri_db WHERE file_name = %s", (expected_filename,))
                     result = cursor.fetchone()
-                    
+
                     if result:
                         sibling_files[modality] = result[0]
                         break
-                
+
                 if modality not in sibling_files:
                     missing.append(f"{patient_id}_{modality}.nii[.gz]")
     finally:
         conn.close()
-    
+
     if missing:
         raise HTTPException(
             status_code=404,
@@ -471,17 +459,18 @@ async def detect_modality(mri_id: int):
         sibling_files=sibling_files
     )
 
+
 @app.post("/mri/{mri_id}/segment", response_model=SegmentationResponse)
 async def segment_mri(mri_id: int, model_type: str = "pspnet"):
 
-    #Run segmentation on the MRI
-    #This is called after detection, when user wants to predict
-
-    if segmentation_model is None:
+    if gradio_client is None:
         raise HTTPException(
             status_code=503,
-            detail="Segmentation model not loaded. Check MODEL_CHECKPOINT_PATH environment variable."
+            detail="Gradio client not initialized. Check HF_SPACE_URL environment variable."
         )
+
+    print(f"\n Starting segmentation for MRI ID: {mri_id}")
+    print(f"   Model type: {model_type}")
 
     # Get MRI info
     conn = get_db_connection()
@@ -497,135 +486,181 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
     finally:
         conn.close()
 
-    # Detect modality and find sibling files
-    detected_modality = detect_modality_from_filename(file_name)
-    if not detected_modality:
-        raise HTTPException(status_code=400, detail="Could not detect modality from filename")
+    #Find all 4 modality files if present, otherwise copy file for all
+    patient_id = file_name.rsplit('_', 1)[0]
+    modalities = ['flair', 't1', 't1ce', 't2']
+    s3_filenames = {}
 
-    # Download all 4 modality files from S3
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_dir_path = Path(temp_dir)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            for modality in modalities:
+                for ext in ['.nii.gz', '.nii']:
+                    expected_filename = f"{patient_id}_{modality}{ext}"
+                    cursor.execute(
+                        "SELECT file_name FROM dicom_mri_db WHERE file_name = %s",
+                        (expected_filename,)
+                    )
+                    result = cursor.fetchone()
 
-        # Download the uploaded file
-        file_data = download_from_s3(file_name)
-        temp_path = temp_dir_path / file_name
-        temp_path.write_bytes(file_data)
+                    if result:
+                        s3_filenames[modality] = result[0]
+                        break
+    finally:
+        conn.close()
 
-        # Extract patient ID from filename
-        patient_id = file_name.rsplit('_', 1)[0]
+    if len(s3_filenames) != 4:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Missing modality files. Found: {list(s3_filenames.keys())}"
+        )
 
-        # Find all 4 modality files in database/S3
-        modalities = ['flair', 't1', 't1ce', 't2']
-        s3_filenames = {}
-        missing = []
+    print(f" Found all modalities: {list(s3_filenames.keys())}")
 
-        conn_check = get_db_connection()
-        try:
-            with conn_check.cursor() as cursor:
-                for modality in modalities:
-                    # Try both .nii and .nii.gz extensions
-                    for ext in ['.nii.gz', '.nii']:
-                        expected_filename = f"{patient_id}_{modality}{ext}"
-                        cursor.execute("SELECT file_name FROM dicom_mri_db WHERE file_name = %s", (expected_filename,))
-                        result = cursor.fetchone()
-                        
-                        if result:
-                            s3_filenames[modality] = result[0]
-                            break
-                    
-                    if modality not in s3_filenames:
-                        missing.append(f"{patient_id}_{modality}.nii[.gz]")
-        finally:
-            conn_check.close()
+    #Download all 4 modality files from S3 and save to temp directory
+    print(" Downloading files from S3...")
+    temp_dir = Path(tempfile.mkdtemp())
+    temp_files = {}
 
-        if missing:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Missing required modality files: {', '.join(missing)}. "
-                    f"Please ensure all 4 modalities (flair, t1, t1ce, t2) are uploaded."
-            )
-
-        # Download all modality files from S3 to temp directory
-        downloaded_paths = {}
+    try:
         for modality, s3_filename in s3_filenames.items():
             try:
-                sibling_data = download_from_s3(s3_filename)
-                local_path = temp_dir_path / s3_filename
-                local_path.write_bytes(sibling_data)
-                downloaded_paths[modality] = str(local_path)
+                file_data = download_from_s3(s3_filename)
+                print(f"    {modality}: {len(file_data) / 1024 / 1024:.1f} MB")
+
+                # Save to temp file
+                temp_file_path = temp_dir / f"{modality}.nii"
+                temp_file_path.write_bytes(file_data)
+                temp_files[modality] = str(temp_file_path)
+
             except Exception as e:
+                # Clean up on error
+                for temp_file in temp_files.values():
+                    try:
+                        Path(temp_file).unlink()
+                    except:
+                        pass
+                try:
+                    temp_dir.rmdir()
+                except:
+                    pass
                 raise HTTPException(
-                    status_code=404,
-                    detail=f"Could not download {modality} file from S3: {s3_filename}. "
-                        f"Error: {str(e)}"
+                    status_code=500,
+                    detail=f"Failed to download {modality}: {str(e)}"
                 )
 
-        # Load all volumes into memory
-        try:
-            volume_dict = load_all_modalities(downloaded_paths)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error loading volumes: {str(e)}")
+        #Call HuggingFace Space using Gradio Client
+        print(f"\n Calling HF Space via Gradio Client")
+        print(f"   Using {'Fusion' if model_type == 'fusion' else 'PSPNet'} model...")
 
-        # Load the appropriate model based on model_type
-        print(f"\n🧠 Running segmentation for MRI ID: {mri_id} using {model_type.upper()} model")
-        
-        # Determine model path
-        if model_type.lower() == "unet":
-            model_path = os.getenv('UNET_MODEL_PATH', 's3://dicom-mri-files/ModelPaths/unet_axial_best.pth')
-        else:  # default to pspnet
-            model_path = os.getenv('MODEL_CHECKPOINT_PATH', 's3://dicom-mri-files/ModelPaths/axial_model_best.pth')
-        
-        print(f"Loading model from: {model_path}")
-        
         try:
-            # Load the selected model with the appropriate architecture
-            selected_model = BraTSSegmentationModel(model_path, model_type=model_type)
-            prediction = selected_model.predict_volume(volume_dict)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
+            #Call the Gradio endpoint
+            result = gradio_client.predict(
+                input_file=handle_file(temp_files['t1']),  # Your HF Space expects single file
+                api_name="/segment_brain_tumor"
+            )
 
-        # Save segmentation result
+            print(" Received response from HF Space")
+            print(f"   Result type: {type(result)}")
+
+            if not isinstance(result, (list, tuple)) or len(result) < 2:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid response format from HF Space: {type(result)}"
+                )
+
+            seg_file_path = result[0]  #Path to segmentation file
+            summary_text = result[1]  #Summary statistics text
+
+            print(f"   Segmentation file: {seg_file_path}")
+            print(f"   Summary preview: {summary_text[:100] if summary_text else 'N/A'}...")
+
+        except Exception as e:
+            error_msg = f"Failed to call HF Space: {str(e)}"
+            print(f" {error_msg}")
+            raise HTTPException(status_code=500, detail=error_msg)
+
+        # Read segmentation file
+        print("Reading segmentation mask...")
+        try:
+            seg_file_path_obj = Path(seg_file_path)
+
+            if not seg_file_path_obj.exists():
+                raise FileNotFoundError(f"Segmentation file not found: {seg_file_path}")
+
+            seg_bytes = seg_file_path_obj.read_bytes()
+            print(f"    Read file: {len(seg_bytes) / 1024 / 1024:.1f} MB")
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to read segmentation file: {str(e)}"
+            )
+
+        #Save segmentation to S3
+        print(" Uploading to S3...")
         seg_filename = f"seg_{mri_id}_{file_name}"
-        seg_temp_path = temp_dir_path / seg_filename
+        seg_s3_path = upload_to_s3(seg_bytes, seg_filename)
+        print(f"    Saved to: {seg_s3_path}")
 
-        # Use the first modality file as reference for header/affine
-        reference_path = downloaded_paths['flair']
-        segmentation_model.save_prediction(prediction, reference_path, str(seg_temp_path))
+        #Parse summary text to extract statistics
+        print(" Parsing statistics...")
+        import re
+        stats = {}
 
-        # Upload segmentation to S3
-        with open(seg_temp_path, 'rb') as f:
-            seg_data = f.read()
-        seg_s3_path = upload_to_s3(seg_data, seg_filename)
+        #Parse lines like "- Background: 1,234,567 voxels"
+        if summary_text:
+            matches = re.findall(r'-\s*([^:]+):\s*([\d,]+)\s*voxels', summary_text)
 
-        # Calculate statistics
-        unique, counts = np.unique(prediction, return_counts=True)
-        class_counts = dict(zip(unique, counts))
+            for name, count in matches:
+                clean_count = int(count.replace(',', ''))
+                name_lower = name.strip().lower()
 
+                if 'background' in name_lower:
+                    stats['background_voxels'] = clean_count
+                elif 'necrotic' in name_lower:
+                    stats['necrotic_voxels'] = clean_count
+                elif 'edema' in name_lower:
+                    stats['edema_voxels'] = clean_count
+                elif 'enhancing' in name_lower:
+                    stats['enhancing_voxels'] = clean_count
+                elif 'total' in name_lower:
+                    stats['total_tumor_voxels'] = clean_count
+
+        #Create summary dict with defaults
         summary = {
-            'background_voxels': int(class_counts.get(0, 0)),
-            'necrotic_voxels': int(class_counts.get(1, 0)),
-            'edema_voxels': int(class_counts.get(2, 0)),
-            'enhancing_voxels': int(class_counts.get(3, 0)),
-            'total_tumor_voxels': int(class_counts.get(1, 0) + class_counts.get(2, 0) + class_counts.get(3, 0)),
-            'shape': prediction.shape
+            'background_voxels': stats.get('background_voxels', 0),
+            'necrotic_voxels': stats.get('necrotic_voxels', 0),
+            'edema_voxels': stats.get('edema_voxels', 0),
+            'enhancing_voxels': stats.get('enhancing_voxels', 0),
+            'total_tumor_voxels': stats.get('total_tumor_voxels',
+                                            stats.get('necrotic_voxels', 0) +
+                                            stats.get('edema_voxels', 0) +
+                                            stats.get('enhancing_voxels', 0))
         }
 
-        # Save to database
+        print(f"   Total tumor voxels: {summary['total_tumor_voxels']:,}")
+
+        #Save to database
+        print(" Saving to database...")
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute("""
                                INSERT INTO segmentations (mri_id, segmentation_path, date_created,
                                                           background_voxels, necrotic_voxels, edema_voxels,
-                                                          enhancing_voxels)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;
+                                                          enhancing_voxels, model_type)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
                                """, (mri_id, seg_s3_path, datetime.now(),
                                      summary['background_voxels'], summary['necrotic_voxels'],
-                                     summary['edema_voxels'], summary['enhancing_voxels']))
+                                     summary['edema_voxels'], summary['enhancing_voxels'], model_type))
                 seg_id = cursor.fetchone()[0]
                 conn.commit()
+                print(f"    Segmentation ID: {seg_id}")
         finally:
             conn.close()
+
+        print(f"\n Segmentation complete!\n")
 
         return SegmentationResponse(
             mri_id=mri_id,
@@ -635,9 +670,23 @@ async def segment_mri(mri_id: int, model_type: str = "pspnet"):
             summary=summary
         )
 
+    finally:
+        #Clean up temp files
+        print(" Cleaning up temporary files...")
+        for temp_file in temp_files.values():
+            try:
+                Path(temp_file).unlink()
+            except Exception as e:
+                print(f"   Warning: Failed to delete {temp_file}: {e}")
+
+        try:
+            temp_dir.rmdir()
+        except Exception as e:
+            print(f"   Warning: Failed to delete temp directory: {e}")
+
+
 @app.get("/mri/{mri_id}/segmentation")
 async def get_segmentation(mri_id: int):
-    #Get the latest segmentation for an MRI
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -648,7 +697,8 @@ async def get_segmentation(mri_id: int):
                                   background_voxels,
                                   necrotic_voxels,
                                   edema_voxels,
-                                  enhancing_voxels
+                                  enhancing_voxels,
+                                  model_type
                            FROM segmentations
                            WHERE mri_id = %s
                            ORDER BY date_created DESC LIMIT 1
@@ -663,6 +713,7 @@ async def get_segmentation(mri_id: int):
                 'segmentation_path': row[1],
                 'file_name': row[1].split('/')[-1],
                 'date_created': row[2],
+                'model_type': row[7] if len(row) > 7 else 'pspnet',
                 'summary': {
                     'background_voxels': row[3],
                     'necrotic_voxels': row[4],
@@ -674,9 +725,9 @@ async def get_segmentation(mri_id: int):
     finally:
         conn.close()
 
+
 @app.get("/mri/{mri_id}/segmentation/data")
 async def download_segmentation(mri_id: int):
-    #Download the segmentation mask file
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:

@@ -10,3 +10,4 @@ torch
 segmentation-models-pytorch
 tqdm
 numpy
+httpx

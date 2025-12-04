@@ -4,7 +4,7 @@ import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
 import { Niivue } from "@niivue/niivue";
 
-const API_BASE_URL = 'http://localhost:8000'; // Backend URL
+const API_BASE_URL = 'https://huggingface.co/spaces/EdTheProgrammer/Metis-DICOM-Backend'; // Backend URL
 
 // Helper component for hotkey legend rows
 const HotkeyRow: React.FC<{ keys: string[]; description: string }> = ({ keys, description }) => (
@@ -93,7 +93,7 @@ const DicomViewer: React.FC = () => {
   const [predictionProgress, setPredictionProgress] = useState<string>('');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
-  const [selectedModel, setSelectedModel] = useState<'pspnet' | 'unet'>('pspnet');
+  const [selectedModel, setSelectedModel] = useState<'pspnet'>('pspnet');
   const [showHotkeyLegend, setShowHotkeyLegend] = useState(false);
 
   // Dynamic windows state with per-window settings
@@ -452,7 +452,7 @@ const DicomViewer: React.FC = () => {
     }
   };
 
-  const runSegmentation = async (mriId: number, modelType: 'pspnet' | 'unet' = 'pspnet') => {
+  const runSegmentation = async (mriId: number, modelType: 'pspnet' = 'pspnet') => {
     try {
       const response = await fetch(`${API_BASE_URL}/mri/${mriId}/segment?model_type=${modelType}`, {
         method: 'POST',
@@ -3575,24 +3575,6 @@ const DicomViewer: React.FC = () => {
         Segmentation Model
       </label>
       <div style={{ display: 'flex', gap: '8px' }}>
-        <button
-          onClick={() => setSelectedModel('unet')}
-          disabled={isPredicting}
-          style={{
-            flex: 1,
-            padding: '10px',
-            background: selectedModel === 'unet' ? 'rgba(59, 130, 246, 0.6)' : 'rgba(51, 65, 85, 0.3)',
-            border: selectedModel === 'unet' ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(148, 163, 184, 0.2)',
-            borderRadius: '6px',
-            color: '#fff',
-            fontSize: '14px',
-            fontWeight: selectedModel === 'unet' ? 600 : 500,
-            cursor: isPredicting ? 'not-allowed' : 'pointer',
-            transition: 'all 0.2s ease',
-          }}
-        >
-          U-Net
-        </button>
         <button
           onClick={() => setSelectedModel('pspnet')}
           disabled={isPredicting}
