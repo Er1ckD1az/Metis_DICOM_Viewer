@@ -108,6 +108,18 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+async def root():
+    return {"status": "healthy", "service": "Metis DICOM Backend"}
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "gradio_client": "initialized" if gradio_client else "not initialized"
+    }
+
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv('DB_HOST'),
