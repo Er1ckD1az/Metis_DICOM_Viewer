@@ -537,7 +537,6 @@ const DicomViewer: React.FC = () => {
     }
     
     setIsPredicting(true);
-    setPredictionError(null);
     setPredictionProgress('Initializing...');
 
     try {
@@ -564,7 +563,6 @@ const DicomViewer: React.FC = () => {
 
     } catch (error: any) {
       console.error('❌ Prediction pipeline failed:', error);
-      setPredictionError(error.message);
       alert(`Prediction failed: ${error.message}`);
     } finally {
       setIsPredicting(false);
