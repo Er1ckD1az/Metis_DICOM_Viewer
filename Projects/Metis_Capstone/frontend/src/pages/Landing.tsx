@@ -31,7 +31,6 @@ export default function Landing() {
   const borderColor = isDarkMode ? "#333333" : "#e5e7eb";
   const mainText = isDarkMode ? "#E0E0E0" : "#0f172a";
   const subText = isDarkMode ? "#A0A0A0" : "#64748b";
-  const accentColor = "#6366f1"; // Matches the purple/indigo from About page
 
   return (
     <div style={{ 
