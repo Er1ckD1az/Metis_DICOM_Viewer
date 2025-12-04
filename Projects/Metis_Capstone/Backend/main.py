@@ -16,7 +16,6 @@ import numpy as np
 from typing import List, Optional
 from pathlib import Path
 from gradio_client import Client, handle_file
-from inference import detect_modality_from_filename
 
 
 class MRI(BaseModel):
