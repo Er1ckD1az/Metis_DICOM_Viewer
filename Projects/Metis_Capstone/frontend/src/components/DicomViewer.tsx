@@ -4,7 +4,7 @@ import "./DicomViewer.css";
 import * as nifti from "nifti-reader-js";
 import { Niivue } from "@niivue/niivue";
 
-const API_BASE_URL = 'https://huggingface.co/spaces/EdTheProgrammer/Metis-DICOM-Backend'; // Backend URL
+const API_BASE_URL = 'https://metis-dicom-viewer.onrender.com'; // Backend URL
 
 // Helper component for hotkey legend rows
 const HotkeyRow: React.FC<{ keys: string[]; description: string }> = ({ keys, description }) => (
