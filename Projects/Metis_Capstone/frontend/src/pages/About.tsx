@@ -36,7 +36,7 @@ const teamMembers = [
     name: "Tyler",
     role: "Team Member",
     bio: "I am Tyler Leggio. I am a student at SELU graduating in fall 2025 and I am the frontend developer for Metis DICOM. Originally from Baton Rouge and moved to Hammond in 2017 to be close to school. After I graduate I am hoping to be a Network Administrator and hopefully a Video Game developer in the future.",
-    image: "/images/Tyler.jpg"
+    image: "/images/Tyler.png"
   }
 ];
 

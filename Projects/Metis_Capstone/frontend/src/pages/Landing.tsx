@@ -24,18 +24,30 @@ export default function Landing() {
     }
   };
 
+  // --- PROFESSIONAL THEME COLORS ---
+  const pageBg = isDarkMode ? "#121212" : "#f7f7fb";
+  const cardBg = isDarkMode ? "#1E1E1E" : "#ffffff";
+  const headerBg = isDarkMode ? "#1E1E1E" : "#ffffff";
+  const borderColor = isDarkMode ? "#333333" : "#e5e7eb";
+  const mainText = isDarkMode ? "#E0E0E0" : "#0f172a";
+  const subText = isDarkMode ? "#A0A0A0" : "#64748b";
+  const accentColor = "#6366f1"; // Matches the purple/indigo from About page
+
   return (
     <div style={{ 
       minHeight: "100vh", 
-      background: isDarkMode ? "#0f172a" : "#f7f7fb", 
-      color: isDarkMode ? "#f1f5f9" : "#0f172a",
+      background: pageBg, 
+      color: mainText,
       transition: "all 0.3s ease"
     }}>
       {/* top nav */}
       <header style={{ 
-        background: isDarkMode ? "#1e293b" : "#fff", 
-        borderBottom: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
-        transition: "all 0.3s ease"
+        background: headerBg, 
+        borderBottom: `1px solid ${borderColor}`,
+        transition: "all 0.3s ease",
+        position: "sticky",
+        top: 0,
+        zIndex: 50
       }}>
         <div
           style={{
@@ -47,30 +59,32 @@ export default function Landing() {
             justifyContent: "space-between",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: 9999,
-                background: isDarkMode ? "#3b82f6" : "#000",
-                color: "#fff",
-                display: "grid",
-                placeItems: "center",
-                fontSize: 12,
-                transition: "all 0.3s ease"
-              }}
-            >
-              M
-            </div>
-            <strong>Metis</strong>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {/* LOGO REPLACEMENT */}
+            <img 
+              src="/images/Logo.jpg" 
+              alt="Metis Logo" 
+              style={{ 
+                width: 32, 
+                height: 32, 
+                borderRadius: "8px",
+                objectFit: "cover"
+              }} 
+            />
+            <strong style={{ fontSize: 20 }}>Metis</strong>
           </div>
 
           {/* ✅ FIXED ABOUT BUTTON */}
           <nav>
             <Link 
               to="/about" 
-              style={{ opacity: 0.8, textDecoration: "none", color: "inherit" }}
+              style={{ 
+                opacity: 0.8, 
+                textDecoration: "none", 
+                color: "inherit",
+                fontWeight: 500,
+                fontSize: 16
+              }}
             >
               About
             </Link>
@@ -159,53 +173,57 @@ export default function Landing() {
         </svg>
       </div>
 
-      {/* EVERYTHING BELOW THIS LINE REMAINS UNCHANGED */}
       {/* hero row */}
-      <section style={{ maxWidth: 1120, margin: "0 auto", padding: "24px" }}>
-        <div style={{ display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr" }}>
+      <section style={{ maxWidth: 1120, margin: "0 auto", padding: "40px 24px" }}>
+        <div style={{ display: "grid", gap: 32, gridTemplateColumns: "1fr 1fr" }}>
           
           {/* left hero card */}
           <div
             style={{
-              background: isDarkMode ? "#1e293b" : "#fff",
-              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
-              borderRadius: 12,
-              padding: 32,
-              transition: "all 0.3s ease"
+              background: cardBg,
+              border: `1px solid ${borderColor}`,
+              borderRadius: 16,
+              padding: 40,
+              transition: "all 0.3s ease",
+              boxShadow: isDarkMode ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 12px rgba(0,0,0,0.05)"
             }}
           >
             <span
               style={{
                 fontSize: 12,
-                padding: "4px 8px",
+                padding: "6px 12px",
                 borderRadius: 9999,
-                background: "#e9f5ff",
-                color: "#0066cc",
+                background: isDarkMode ? "rgba(99, 102, 241, 0.2)" : "#e9f5ff",
+                color: isDarkMode ? "#818cf8" : "#0066cc",
+                fontWeight: 600,
+                border: isDarkMode ? "1px solid rgba(99, 102, 241, 0.3)" : "none"
               }}
             >
               🧠 Medical Imaging Platform
             </span>
-            <h1 style={{ marginTop: 16, fontSize: 32, lineHeight: 1.15 }}>
+            <h1 style={{ marginTop: 24, fontSize: 36, lineHeight: 1.2, fontWeight: 700 }}>
               Advanced DICOM Viewer
               <br />
-              for Medical Professionals
+              <span style={{ color: subText, fontWeight: 400 }}>for Medical Professionals</span>
             </h1>
-            <p style={{ marginTop: 8, opacity: 0.8 }}>
+            <p style={{ marginTop: 16, color: subText, fontSize: 16, lineHeight: 1.6 }}>
               Built for MRI analysis with a custom segmentation workflow. Analyze brain tumors with
-              precision.
+              precision and speed.
             </p>
-            <div style={{ marginTop: 20 }}>
+            <div style={{ marginTop: 32 }}>
               <a
                 href="https://github.com/Er1ckD1az/Metis_DICOM_Viewer"
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
-                  background: "#000",
+                  background: isDarkMode ? "#333" : "#000",
                   color: "#fff",
-                  padding: "10px 14px",
+                  padding: "12px 20px",
                   borderRadius: 8,
                   textDecoration: "none",
                   fontWeight: 600,
+                  display: "inline-block",
+                  border: isDarkMode ? "1px solid #555" : "none"
                 }}
               >
                 View Documentation
@@ -216,12 +234,13 @@ export default function Landing() {
           {/* right hero card */}
           <div
             style={{
-              background: isDarkMode ? "#1e293b" : "#fff",
-              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
-              borderRadius: 12,
+              background: cardBg,
+              border: `1px solid ${borderColor}`,
+              borderRadius: 16,
               padding: 32,
               position: "relative",
-              transition: "all 0.3s ease"
+              transition: "all 0.3s ease",
+              boxShadow: isDarkMode ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 12px rgba(0,0,0,0.05)"
             }}
           >
             <div
@@ -230,12 +249,13 @@ export default function Landing() {
                 right: 16,
                 top: 16,
                 fontSize: 12,
-                padding: "4px 8px",
+                padding: "4px 10px",
                 borderRadius: 9999,
-                background: "#eafbea",
-                color: "#17803d",
-                border: "1px solid #c7e8cf",
+                background: isDarkMode ? "rgba(34, 197, 94, 0.2)" : "#eafbea",
+                color: isDarkMode ? "#4ade80" : "#17803d",
+                border: isDarkMode ? "1px solid rgba(34, 197, 94, 0.3)" : "1px solid #c7e8cf",
                 zIndex: 3,
+                fontWeight: 600
               }}
             >
               ✅ DICOM Compatible
@@ -243,15 +263,15 @@ export default function Landing() {
 
             <div
               style={{
-                height: 240,
+                height: 280,
                 display: "grid",
                 placeItems: "center",
                 backgroundImage:
                   "url('/images/radiology-workstation-about-us-1024x693.jpg')",
                 backgroundSize: "cover",
                 backgroundPosition: "center",
-                borderRadius: 8,
-                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                border: `1px solid ${borderColor}`,
                 position: "relative",
                 overflow: "hidden",
                 color: "#fff",
@@ -261,7 +281,8 @@ export default function Landing() {
                 style={{
                   position: "absolute",
                   inset: 0,
-                  background: "rgba(0,0,0,0.25)",
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(2px)"
                 }}
               />
               <div
@@ -269,89 +290,92 @@ export default function Landing() {
                   position: "relative",
                   textAlign: "center",
                   zIndex: 2,
-                  textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+                  textShadow: "0 2px 4px rgba(0,0,0,0.8)",
                 }}
               >
-                <div style={{ fontSize: 28 }}>🖥️</div>
-                <div style={{ marginTop: 6, fontWeight: 600, fontSize: 20 }}>
+                <div style={{ fontSize: 32 }}>🖥️</div>
+                <div style={{ marginTop: 8, fontWeight: 700, fontSize: 22 }}>
                   Medical Imaging Workstation
                 </div>
-                <div style={{ fontSize: 14, opacity: 0.95 }}>
+                <div style={{ fontSize: 14, opacity: 0.9 }}>
                   Advanced DICOM Viewer Interface
                 </div>
               </div>
             </div>
 
-            <div style={{ marginTop: 12, fontSize: 12 }}>
+            <div style={{ marginTop: 16, fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
               <span
                 style={{
                   padding: "2px 8px",
-                  background: isDarkMode ? "#334155" : "#f3f4f6",
-                  border: isDarkMode ? "1px solid #475569" : "1px solid #e5e7eb",
+                  background: isDarkMode ? "#333" : "#f3f4f6",
+                  border: `1px solid ${borderColor}`,
                   borderRadius: 6,
-                  color: isDarkMode ? "#f1f5f9" : "#0f172a",
+                  color: mainText,
                   fontWeight: 600,
                 }}
               >
                 3D
               </span>{" "}
-              <span style={{ opacity: 0.7 }}>Volume Rendering • Real-time 3D visualization</span>
+              <span style={{ color: subText }}>Volume Rendering • Real-time 3D visualization</span>
             </div>
           </div>
         </div>
       </section>
 
       {/* upload section */}
-      <section id="upload" style={{ maxWidth: 880, margin: "0 auto", padding: "24px" }}>
+      <section id="upload" style={{ maxWidth: 880, margin: "0 auto", padding: "0 24px 40px 24px" }}>
         <div
           style={{
-            background: isDarkMode ? "#1e293b" : "#fff",
-            border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
-            borderRadius: 12,
-            padding: 32,
-            transition: "all 0.3s ease"
+            background: cardBg,
+            border: `1px solid ${borderColor}`,
+            borderRadius: 16,
+            padding: 40,
+            transition: "all 0.3s ease",
+            boxShadow: isDarkMode ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 12px rgba(0,0,0,0.05)"
           }}
         >
           <div style={{ textAlign: "center", maxWidth: 640, margin: "0 auto" }}>
-            <h2 style={{ fontSize: 24, margin: 0 }}>Upload Your DICOM Files</h2>
-            <p style={{ marginTop: 8, opacity: 0.8 }}>
+            <h2 style={{ fontSize: 28, margin: 0, fontWeight: 700 }}>Upload Your DICOM Files</h2>
+            <p style={{ marginTop: 8, color: subText }}>
               Drag & drop .dcm or .nii/.nii.gz files, or click to browse (UI demo only).
             </p>
           </div>
 
           <label
             style={{
-              marginTop: 16,
+              marginTop: 32,
               display: "block",
               textAlign: "center",
-              border: isDarkMode ? "2px dashed #475569" : "2px dashed #d1d5db",
+              border: `2px dashed ${isDarkMode ? "#444" : "#d1d5db"}`,
               borderRadius: 12,
-              padding: 32,
+              padding: 48,
               cursor: "pointer",
-              background: isDarkMode ? "#0f172a" : "#fafafa",
+              background: isDarkMode ? "#121212" : "#fafafa",
               transition: "all 0.3s ease"
             }}
           >
-            <div style={{ fontSize: 28 }}>⬆️</div>
-            <div style={{ marginTop: 6, fontWeight: 600 }}>Upload your DICOM file</div>
-            <div style={{ fontSize: 13, opacity: 0.7 }}>
+            <div style={{ fontSize: 32, marginBottom: 16 }}>⬆️</div>
+            <div style={{ fontWeight: 600, fontSize: 18, color: mainText }}>Upload your DICOM file</div>
+            <div style={{ fontSize: 14, color: subText, marginTop: 4 }}>
               Supports NIfTI (.nii, .nii.gz) and DICOM (.dcm) up to 500MB
             </div>
             <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" onChange={handleFileUpload} />
           </label>
 
-          <div style={{ marginTop: 12, textAlign: "center" }}>
+          <div style={{ marginTop: 24, textAlign: "center" }}>
             <label
               style={{
                 display: "inline-flex",
                 gap: 8,
                 alignItems: "center",
-                padding: "8px 12px",
+                padding: "10px 20px",
                 borderRadius: 8,
-                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
-                background: isDarkMode ? "#1e293b" : "#fff",
+                border: `1px solid ${borderColor}`,
+                background: isDarkMode ? "#333" : "#fff",
+                color: mainText,
                 cursor: "pointer",
-                transition: "all 0.3s ease"
+                transition: "all 0.3s ease",
+                fontWeight: 500
               }}
             >
               <input type="file" className="hidden" accept=".dcm,.nii,.nii.gz" onChange={handleFileUpload} />
@@ -362,33 +386,43 @@ export default function Landing() {
       </section>
 
       {/* experience */}
-      <section style={{ maxWidth: 1120, margin: "0 auto", padding: "24px" }}>
-        <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto" }}>
-          <h2 style={{ fontSize: 24, margin: 0 }}>Experience Metis</h2>
-          <p style={{ marginTop: 8, opacity: 0.8 }}>
+      <section style={{ maxWidth: 1120, margin: "0 auto", padding: "0 24px 40px 24px" }}>
+        <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto 32px auto" }}>
+          <h2 style={{ fontSize: 28, margin: 0, fontWeight: 700 }}>Experience Metis</h2>
+          <p style={{ marginTop: 8, color: subText }}>
             Explore key features like 3D visualization, measurements, and annotations.
           </p>
         </div>
 
-        <div style={{ marginTop: 16, display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr" }}>
+        <div style={{ display: "grid", gap: 32, gridTemplateColumns: "1fr 1fr" }}>
           <div
             style={{ 
-              background: isDarkMode ? "#1e293b" : "#fff", 
-              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb", 
-              borderRadius: 12, 
-              padding: 24,
-              transition: "all 0.3s ease"
+              background: cardBg, 
+              border: `1px solid ${borderColor}`, 
+              borderRadius: 16, 
+              padding: 32,
+              transition: "all 0.3s ease",
+              boxShadow: isDarkMode ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 12px rgba(0,0,0,0.05)"
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 600 }}>Try Our Demo</div>
-            <p style={{ marginTop: 6, opacity: 0.8 }}>
+            <div style={{ fontSize: 20, fontWeight: 600 }}>Try Our Demo</div>
+            <p style={{ marginTop: 8, color: subText, lineHeight: 1.6 }}>
               Don't have a DICOM file? Launch the demo viewer and explore the tools.
             </p>
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 24 }}>
               <Link
                 to="/viewer"
                 state={{ demoMode: true }}
-                style={{ background: "#000", color: "#fff", padding: "10px 14px", borderRadius: 8, textDecoration: 'none', display: 'inline-block' }}
+                style={{ 
+                  background: isDarkMode ? "#333" : "#000", 
+                  color: "#fff", 
+                  padding: "12px 20px", 
+                  borderRadius: 8, 
+                  textDecoration: 'none', 
+                  display: 'inline-block',
+                  fontWeight: 600,
+                  border: isDarkMode ? "1px solid #555" : "none"
+                }}
               >
                 ▶︎ Launch Demo Viewer
               </Link>
@@ -397,28 +431,46 @@ export default function Landing() {
 
           <div
             style={{ 
-              background: isDarkMode ? "#1e293b" : "#fff", 
-              border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb", 
-              borderRadius: 12, 
-              padding: 24,
-              transition: "all 0.3s ease"
+              background: cardBg, 
+              border: `1px solid ${borderColor}`, 
+              borderRadius: 16, 
+              padding: 32,
+              transition: "all 0.3s ease",
+              boxShadow: isDarkMode ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 12px rgba(0,0,0,0.05)"
             }}
           >
             <div
               style={{
-                height: 160,
-                borderRadius: 8,
-                border: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eh",
-                background: isDarkMode ? "linear-gradient(135deg,#1e293b,#0f172a)" : "linear-gradient(135deg,#eef2f7,#e5e7eb)",
+                height: 180,
+                borderRadius: 12,
+                border: `1px solid ${borderColor}`,
+                // UPDATED IMAGE SECTION HERE
+                backgroundImage: "url('/images/Sample MRI Scan.jpg')",
+                backgroundSize: "cover",
+                backgroundPosition: "center",
                 display: "grid",
                 placeItems: "center",
-                transition: "all 0.3s ease"
+                transition: "all 0.3s ease",
+                position: "relative",
+                overflow: "hidden",
+                color: "#fff"
               }}
             >
-              <div style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 22 }}>🧪</div>
-                <div style={{ fontWeight: 600, marginTop: 4 }}>Sample MRI Scan</div>
-                <div style={{ fontSize: 13, opacity: 0.7 }}>Brain imaging dataset</div>
+              {/* Overlay with blur effect */}
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(2px)"
+                }}
+              />
+              
+              {/* Content */}
+              <div style={{ textAlign: "center", position: "relative", zIndex: 2, textShadow: "0 2px 4px rgba(0,0,0,0.8)" }}>
+                <div style={{ fontSize: 32 }}>🧪</div>
+                <div style={{ fontWeight: 600, marginTop: 8, color: "#fff" }}>Sample MRI Scan</div>
+                <div style={{ fontSize: 14, color: "rgba(255,255,255,0.9)" }}>Brain imaging dataset</div>
               </div>
             </div>
           </div>
@@ -427,22 +479,22 @@ export default function Landing() {
 
       {/* footer */}
       <footer style={{ 
-        marginTop: 24, 
-        background: isDarkMode ? "#1e293b" : "#fff", 
-        borderTop: isDarkMode ? "1px solid #334155" : "1px solid #e5e7eb",
+        marginTop: 40, 
+        background: headerBg, 
+        borderTop: `1px solid ${borderColor}`,
         transition: "all 0.3s ease"
       }}>
         <div
           style={{
             maxWidth: 1120,
             margin: "0 auto",
-            padding: "24px",
+            padding: "32px 24px",
             textAlign: "center",
             fontSize: 14,
-            opacity: 0.85,
+            color: subText,
           }}
         >
-          <div style={{ fontWeight: 600 }}>Metis</div>
+          <div style={{ fontWeight: 700, color: mainText, marginBottom: 8, fontSize: 16 }}>Metis</div>
           <div>
             Professional DICOM viewing platform for medical imaging professionals worldwide.
           </div>
