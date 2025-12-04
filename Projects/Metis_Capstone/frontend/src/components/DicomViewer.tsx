@@ -89,7 +89,6 @@ const DicomViewer: React.FC = () => {
   const [predictionDimensions, setPredictionDimensions] = useState<[number, number, number]>([0, 0, 0]);
   const [showOverlay, setShowOverlay] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
-  const [predictionError, setPredictionError] = useState<string | null>(null);
   const [predictionProgress, setPredictionProgress] = useState<string>('');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [segmentationSummary, setSegmentationSummary] = useState<any>(null);
